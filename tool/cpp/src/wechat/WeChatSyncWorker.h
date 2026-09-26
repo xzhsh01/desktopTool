@@ -56,6 +56,10 @@ public slots:
     // 停止 watcher
     void unwatchAccount(const QString& accId);
 
+    // 单联系人详细信息异步加载（在 worker 线程，不阻塞 UI）
+    // 完成时 emit contactDetailReady
+    void loadContactDetail(const QString& accId, const QString& wxid);
+
 signals:
     void syncStarted(const QString& accId, const QString& stage);
     void syncProgress(const QString& accId, const QString& stage,
@@ -68,6 +72,10 @@ signals:
                            const QList<QVariantMap>& messages);
     void syncFinished(const QString& accId, qint64 elapsedMs);
     void syncFailed(const QString& accId, const QString& reason);
+
+    // 联系人详细信息异步返回
+    void contactDetailReady(const QString& accId, const QString& wxid,
+                            const QVariantMap& detail);
 
     // watcher 回调（worker 线程触发，已在 worker 线程）
     void dirChanged(const QString& accId);

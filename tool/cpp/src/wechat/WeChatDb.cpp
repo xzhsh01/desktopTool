@@ -649,6 +649,66 @@ QList<WeChatDb::Contact> WeChatDb::loadContacts() {
     return out;
 }
 
+// 单联系人详细信息（详情页用）
+// 3.x: Contact 表带 Province/City/Signature/Sex/BigHeadImgUrl/SmallHeadImgUrl
+// 4.x: contact 表带 big_head_url/small_head_url；signature/province/city/sex 在 extra_buffer 里（暂不解析）
+WeChatDb::ContactDetail WeChatDb::loadContactDetail(const QString& wxid) {
+    ContactDetail d;
+    d.userName = wxid;
+    d.display  = wxid;
+
+    if (wxid.isEmpty()) return d;
+
+    if (m_version == 4) {
+        // 4.x contact.db
+        auto rows = runOn(contactDbCache(),
+            "SELECT username, alias, nick_name, remark, local_type, "
+            "big_head_url, small_head_url "
+            "FROM contact WHERE username = ? LIMIT 1",
+            {wxid});
+        if (rows.isEmpty()) return d;
+        const auto& r = rows.first();
+        d.userName     = r.value(0).toString();
+        d.alias        = r.value(1).toString();
+        d.nickname     = r.value(2).toString();
+        d.remark       = r.value(3).toString();
+        d.type         = r.value(4).toInt();
+        d.bigHeadUrl   = r.value(5).toString();
+        d.smallHeadUrl = r.value(6).toString();
+        d.isChatRoom   = d.userName.endsWith("@chatroom");
+        d.display      = d.remark.isEmpty()
+                            ? (d.nickname.isEmpty() ? d.userName : d.nickname)
+                            : d.remark;
+        return d;
+    }
+
+    // 3.x MicroMsg.db 的 Contact 表
+    auto rows = runOn(contactDbCache(),
+        "SELECT UserName, Alias, NickName, Remark, Type, VerifyFlag, "
+        "Province, City, Signature, Sex, BigHeadImgUrl, SmallHeadImgUrl "
+        "FROM Contact WHERE UserName = ? LIMIT 1",
+        {wxid});
+    if (rows.isEmpty()) return d;
+    const auto& r = rows.first();
+    d.userName     = r.value(0).toString();
+    d.alias        = r.value(1).toString();
+    d.nickname     = r.value(2).toString();
+    d.remark       = r.value(3).toString();
+    d.type         = r.value(4).toInt();
+    d.verifyFlag   = r.value(5).toInt();
+    d.province     = r.value(6).toString();
+    d.city         = r.value(7).toString();
+    d.signature    = r.value(8).toString();
+    d.sex          = r.value(9).toInt();
+    d.bigHeadUrl   = r.value(10).toString();
+    d.smallHeadUrl = r.value(11).toString();
+    d.isChatRoom   = d.userName.endsWith("@chatroom");
+    d.display      = d.remark.isEmpty()
+                        ? (d.nickname.isEmpty() ? d.userName : d.nickname)
+                        : d.remark;
+    return d;
+}
+
 // ── 群成员 ───────────────────────────────────────────────────────────────────
 
 // 4.x 群成员存储在 chat_room.ext_buffer（protobuf RoomData）

@@ -70,6 +70,8 @@ private slots:
     void onCurrentRowChanged();
 
 private:
+    // 计算列表内容的轻量指纹（用于 setSessions/setContacts 的短路判断）
+    static QString fingerprint(const QVariantList& list);
     QStackedWidget* m_stack       = nullptr;
     QListWidget*    m_chatList    = nullptr;
     QListWidget*    m_contactList = nullptr;
@@ -79,7 +81,15 @@ private:
     // 缓存：accId → 数据
     QHash<QString, QVariantList> m_sessionsCache;
     QHash<QString, QVariantList> m_contactsCache;
+    // 缓存：accId → 数据指纹（避免相同数据触发 list 重建）
+    QHash<QString, QString>      m_sessionsFp;
+    QHash<QString, QString>      m_contactsFp;
 
     QString m_currentAccId;        // 当前面板对应的账号（决定数据源）
     QString m_currentTalker;       // 当前聊天页选中项的 talker（高亮 / 协调者用）
+
+    // 上次 rebuild 的指纹（避免来回切换 sidebar 时反复重建同一份数据）
+    // 数据未变 → 直接 return，不 clear() 不重建 item，零开销
+    QString m_chatListBuiltFp;     // rebuildChatList 写入
+    QString m_contactListBuiltFp;  // rebuildContactList 写入
 };

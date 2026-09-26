@@ -6,10 +6,12 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMap>
 #include <QPainter>
 #include <QPixmap>
 #include <QStackedWidget>
 #include <QVBoxLayout>
+#include <QCryptographicHash>
 
 namespace {
 // 圆形头像（与 WeChatSidebar / WeChatDetailPanel 内同名实现保持一致）
@@ -165,6 +167,9 @@ void WeChatListPanel::buildUi() {
     m_chatList = new QListWidget;
     m_chatList->setStyleSheet(listStyle);
     m_chatList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    // 单击 / 双击 / Enter 都触发（itemActivated 只响应双击+Enter）
+    connect(m_chatList, &QListWidget::itemClicked,
+            this, &WeChatListPanel::onChatItemActivated);
     connect(m_chatList, &QListWidget::itemActivated,
             this, &WeChatListPanel::onChatItemActivated);
     connect(m_chatList, &QListWidget::currentRowChanged,
@@ -174,6 +179,8 @@ void WeChatListPanel::buildUi() {
     m_contactList = new QListWidget;
     m_contactList->setStyleSheet(listStyle);
     m_contactList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    connect(m_contactList, &QListWidget::itemClicked,
+            this, &WeChatListPanel::onContactItemActivated);
     connect(m_contactList, &QListWidget::itemActivated,
             this, &WeChatListPanel::onContactItemActivated);
     m_stack->addWidget(m_contactList);
@@ -182,7 +189,15 @@ void WeChatListPanel::buildUi() {
 }
 
 void WeChatListPanel::setSessions(const QString& accId, const QVariantList& list) {
+    const QString fp = fingerprint(list);
+    if (m_sessionsCache.value(accId).size() == list.size() &&
+        m_sessionsFp.value(accId) == fp) {
+        // 数据未变：不重建（重复点击 / 后台空转同步都不会触发 list 重建）
+        m_sessionsCache.insert(accId, list);   // 仍刷新引用以保持最新
+        return;
+    }
     m_sessionsCache.insert(accId, list);
+    m_sessionsFp.insert(accId, fp);
     if (accId == m_currentAccId && m_stack->currentIndex() == 0) {
         rebuildChatList();
         updateTitle();
@@ -190,11 +205,36 @@ void WeChatListPanel::setSessions(const QString& accId, const QVariantList& list
 }
 
 void WeChatListPanel::setContacts(const QString& accId, const QVariantList& list) {
+    const QString fp = fingerprint(list);
+    if (m_contactsCache.value(accId).size() == list.size() &&
+        m_contactsFp.value(accId) == fp) {
+        m_contactsCache.insert(accId, list);
+        return;
+    }
     m_contactsCache.insert(accId, list);
+    m_contactsFp.insert(accId, fp);
     if (accId == m_currentAccId && m_stack->currentIndex() == 1) {
         rebuildContactList();
         updateTitle();
     }
+}
+
+// 计算列表指纹：数量 + 各条目关键字段拼接 → 整型 hash
+// （每次 O(N) 但只对比 hash，不遍历/不创建 widget）
+QString WeChatListPanel::fingerprint(const QVariantList& list) {
+    if (list.isEmpty()) return QStringLiteral("0");
+    QCryptographicHash h(QCryptographicHash::Sha1);
+    for (const auto& v : list) {
+        const auto m = v.toMap();
+        // 通用：拼接所有字段的 type+key+value，schema 不敏感
+        QMap<QString, QVariant> sorted(m);
+        QString s;
+        for (auto it = sorted.constBegin(); it != sorted.constEnd(); ++it) {
+            s += it.key() + "=" + it.value().toString() + ";";
+        }
+        h.addData(s.toUtf8());
+    }
+    return QString::fromLatin1(h.result().toHex());
 }
 
 void WeChatListPanel::clearData(const QString& accId) {
@@ -230,6 +270,9 @@ bool WeChatListPanel::isShowingChatList() const {
 void WeChatListPanel::setCurrentAccId(const QString& accId) {
     if (m_currentAccId == accId) return;       // 账号未变：不重建（避免重复点击触发昂贵 list 重建）
     m_currentAccId = accId;
+    // 清掉旧 fp：账号变了，必须重新 rebuild 一次（rebuild 内部的 fp 短路不能挡这次）
+    m_chatListBuiltFp.clear();
+    m_contactListBuiltFp.clear();
     if (m_stack->currentIndex() == 0) rebuildChatList();
     else                                rebuildContactList();
     updateTitle();
@@ -241,10 +284,13 @@ QString WeChatListPanel::searchText() const {
 
 void WeChatListPanel::rebuildChatList() {
     if (!m_chatList) return;
-    m_chatList->clear();
     const QString filter = searchText();
 
+    // 缓存未就绪 → 显示"加载中…"（已显示就跳过，避免重复 addItem）
     if (!m_sessionsCache.contains(m_currentAccId)) {
+        if (m_chatListBuiltFp == "__loading__") return;
+        m_chatListBuiltFp = "__loading__";
+        m_chatList->clear();
         auto* it = new QListWidgetItem("加载中…");
         it->setFlags(Qt::NoItemFlags);
         it->setForeground(QColor(Theme::kMuted));
@@ -252,7 +298,16 @@ void WeChatListPanel::rebuildChatList() {
         return;
     }
 
-    const auto sessions = m_sessionsCache.value(m_currentAccId);
+    // 指纹短路：来回切 sidebar chat/contact 时不重建同一份数据
+    // （watcher 频繁写但数据未必变；账号切换会清 fp 强制重建）
+    const auto& sessions = m_sessionsCache.value(m_currentAccId);
+    const QString fp = fingerprint(sessions);
+    if (fp == m_chatListBuiltFp && m_chatList->count() == sessions.size()) {
+        return;   // 数据未变 → 跳过 clear + 重建（关键卡顿优化点）
+    }
+    m_chatListBuiltFp = fp;
+
+    m_chatList->clear();
     for (const auto& v : sessions) {
         const auto s = v.toMap();
         const QString title = s["title"].toString();
@@ -270,10 +325,13 @@ void WeChatListPanel::rebuildChatList() {
 
 void WeChatListPanel::rebuildContactList() {
     if (!m_contactList) return;
-    m_contactList->clear();
     const QString filter = searchText();
 
+    // 缓存未就绪 → 显示"加载中…"（已显示就跳过，避免重复 addItem）
     if (!m_contactsCache.contains(m_currentAccId)) {
+        if (m_contactListBuiltFp == "__loading__") return;
+        m_contactListBuiltFp = "__loading__";
+        m_contactList->clear();
         auto* it = new QListWidgetItem("加载中…");
         it->setFlags(Qt::NoItemFlags);
         it->setForeground(QColor(Theme::kMuted));
@@ -281,7 +339,15 @@ void WeChatListPanel::rebuildContactList() {
         return;
     }
 
-    const auto contacts = m_contactsCache.value(m_currentAccId);
+    // 指纹短路：来回切 sidebar chat/contact 时不重建同一份数据
+    const auto& contacts = m_contactsCache.value(m_currentAccId);
+    const QString fp = fingerprint(contacts);
+    if (fp == m_contactListBuiltFp && m_contactList->count() == contacts.size()) {
+        return;   // 数据未变 → 跳过 clear + 重建（关键卡顿优化点）
+    }
+    m_contactListBuiltFp = fp;
+
+    m_contactList->clear();
     for (const auto& v : contacts) {
         const auto c = v.toMap();
         const QString display = c["display"].toString();

@@ -54,6 +54,11 @@ public:
     static QList<QVariantMap> loadMessages(const QString& accId, const QString& talker,
                                             int limit = 0);
 
+    // 从 XML content 中提取附件元信息（type=49 XML 复合消息等）
+    // 输出到 m["attachTitle"] / m["attachSize"] / m["attachExt"] / m["attachUrl"] / m["attachMime"]
+    static void parseAttachMeta(int type, int subType,
+                               const QString& content, QVariantMap& m);
+
     // ── 群成员 ──────────────────────────────────────────────────────
     static bool replaceChatRoomMembers(const QString& accId, const QString& chatRoomId,
                                        const QStringList& wxids);

@@ -44,6 +44,12 @@ public:
         QString content;      // 文本内容 / 系统消息
         QDateTime time;
         QString display;      // 渲染用描述（[图片] [语音] 等）
+        // 附件元信息（type=49 子类型、3/34/43/47/48 等）
+        QString attachTitle;  // 文件名 / 链接标题
+        qint64 attachSize = 0;
+        QString attachExt;    // 扩展名 / 类型标记
+        QString attachUrl;    // 链接 / 下载 URL
+        QString attachMime;   // 消息子类型文本（appmsg/type）
     };
 
     struct Contact {
@@ -55,6 +61,17 @@ public:
         int verifyFlag = 0;
         QString display;      // 备注 > 昵称 > wxid
         bool isChatRoom = false;
+    };
+
+    // 单联系人的详细信息（详情页用；字段比 Contact 多）
+    struct ContactDetail : public Contact {
+        QString smallHeadUrl;    // 缩略头像 URL
+        QString bigHeadUrl;      // 高清头像 URL
+        QString signature;       // 个性签名（3.x 直接字段；4.x 从 extra_buffer 解析）
+        QString province;        // 省
+        QString city;            // 市
+        QString country;         // 国
+        int sex = 0;             // 0=未知 1=男 2=女
     };
 
     // ── 解密 ──────────────────────────────────────────────────
@@ -81,6 +98,8 @@ public:
     QList<ChatMessage> loadMessages(const QString& talker, int limit = 0);
     // 联系人列表（按显示名排序；包含群聊）
     QList<Contact> loadContacts();
+    // 单联系人的详细信息（比 loadContacts 字段多；从 contact.db 直接查询）
+    ContactDetail loadContactDetail(const QString& wxid);
     // 群成员 wxid 列表
     QStringList chatRoomMembers(const QString& chatRoomId);
     // 联系人显示名（备注 > 昵称 > wxid），查不到返回 wxid 本身

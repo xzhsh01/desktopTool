@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QThread>
 
@@ -44,6 +45,107 @@ bool execSql(sqlite3* db, const QString& sql, QString* errOut = nullptr) {
 }
 
 }  // namespace
+
+// ── 附件 XML 元信息提取 ────────────────────────────────────────────────────────
+
+// 从 XML content 提取第一个 <tag>...</tag> 的内容（无 → 空串）
+static QString xmlTag(const QString& xml, const QString& tag) {
+    if (xml.isEmpty() || tag.isEmpty()) return {};
+    const QString pat = "<" + tag + "[^>]*>";
+    const QRegularExpression open(pat, QRegularExpression::CaseInsensitiveOption);
+    const auto m1 = open.match(xml);
+    if (!m1.hasMatch()) return {};
+    const int start = m1.capturedEnd();
+    const QRegularExpression close("</" + tag + ">", QRegularExpression::CaseInsensitiveOption);
+    const auto m2 = close.match(xml, start);
+    if (!m2.hasMatch()) return {};
+    QString out = xml.mid(start, m2.capturedStart() - start);
+    return out.simplified();
+}
+
+void CacheDb::parseAttachMeta(int type, int subType,
+                              const QString& content, QVariantMap& m) {
+    // 只对已知有附件结构的类型解析；其它清空
+    m["attachTitle"] = QString();
+    m["attachSize"]  = qint64(0);
+    m["attachExt"]   = QString();
+    m["attachUrl"]   = QString();
+    m["attachMime"]  = QString();
+    if (content.isEmpty()) return;
+
+    auto pickNum = [](const QString& s) -> qint64 {
+        if (s.isEmpty()) return 0;
+        bool ok = false;
+        const qint64 v = s.toLongLong(&ok);
+        return ok ? v : 0;
+    };
+
+    // type 49 = XML 复合消息
+    if (type == 49) {
+        const QString appmsg = xmlTag(content, "appmsg");
+        if (appmsg.isEmpty()) return;
+
+        const QString title = xmlTag(appmsg, "title");
+        const QString url   = xmlTag(appmsg, "url");
+        const QString mime  = xmlTag(appmsg, "type");  // appmsg/<type> 是消息子类型文本
+        QString ext, sizeStr;
+
+        switch (subType) {
+        case 4: {  // 文件
+            const QString fileInfoTag = xmlTag(appmsg, "appattach");
+            ext     = xmlTag(fileInfoTag, "fileext").toLower();
+            sizeStr = xmlTag(fileInfoTag, "totallen");
+            break;
+        }
+        case 5:   // 链接
+        case 88:  // 公众号文章
+        case 19:  // 聊天记录
+            break;
+        case 6: { // 音乐
+            ext = "mp3";
+            break;
+        }
+        case 33:  // 小程序
+        case 36: {
+            const QString weapp = xmlTag(appmsg, "weappinfo");
+            ext = xmlTag(weapp, "appid");
+            break;
+        }
+        case 57: { // 引用消息
+            const QString refer = xmlTag(appmsg, "refermsg");
+            const QString rt = xmlTag(refer, "content");
+            if (!rt.isEmpty()) m["attachTitle"] = QString("引用：") + rt;
+            m["attachMime"] = "quote";
+            return;
+        }
+        case 2000: { // 转账
+            const QString pay = xmlTag(appmsg, "pay_memo");
+            if (!pay.isEmpty()) m["attachTitle"] = pay;
+            m["attachMime"] = "transfer";
+            return;
+        }
+        default:
+            break;
+        }
+
+        m["attachTitle"] = title;
+        m["attachSize"]  = pickNum(sizeStr);
+        m["attachExt"]   = ext;
+        m["attachUrl"]   = url;
+        m["attachMime"]  = mime;
+        return;
+    }
+
+    // 非 XML 类型，但有明确语义 → 给个扩展名（便于 UI 显示）
+    switch (type) {
+    case 3:  m["attachExt"] = "image"; m["attachMime"] = "image";   break;
+    case 34: m["attachExt"] = "voice"; m["attachMime"] = "voice";   break;
+    case 43: m["attachExt"] = "video"; m["attachMime"] = "video";   break;
+    case 47: m["attachExt"] = "gif";   m["attachMime"] = "gif";     break;
+    case 48: m["attachExt"] = "loc";   m["attachMime"] = "location"; break;
+    default: break;
+    }
+}
 
 QString CacheDb::dbPath() {
     static QString path;
@@ -110,6 +212,11 @@ bool CacheDb::initialize(QString* errOut) {
             content    TEXT,
             display    TEXT,
             time       INTEGER,
+            attach_title TEXT,
+            attach_size  INTEGER,
+            attach_ext   TEXT,
+            attach_url   TEXT,
+            attach_mime  TEXT,
             PRIMARY KEY (acc_id, msg_id)
         );
         CREATE INDEX IF NOT EXISTS idx_messages_acc_talker_time
@@ -133,7 +240,33 @@ bool CacheDb::initialize(QString* errOut) {
     )SQL";
 
     bool ok = execSql(db, ddl, errOut);
+
+    // 兼容老库：单独再开一次连接做 ALTER（SQLite 不能在创建表的同一事务里 ALTER）
+    if (ok) {
+        sqlite3* db2 = nullptr;
+        if (openDb(&db2, nullptr)) {
+            auto hasCol = [&](const char* col) {
+                sqlite3_stmt* st = nullptr;
+                const QString sql = "SELECT 1 FROM pragma_table_info('messages') WHERE name=?1";
+                bool exists = false;
+                if (sqlite3_prepare_v2(db2, sql.toUtf8().constData(), -1, &st, nullptr) == SQLITE_OK) {
+                    sqlite3_bind_text(st, 1, col, -1, SQLITE_TRANSIENT);
+                    if (sqlite3_step(st) == SQLITE_ROW) exists = true;
+                }
+                if (st) sqlite3_finalize(st);
+                return exists;
+            };
+            if (!hasCol("attach_title")) execSql(db2, "ALTER TABLE messages ADD COLUMN attach_title TEXT", nullptr);
+            if (!hasCol("attach_size"))  execSql(db2, "ALTER TABLE messages ADD COLUMN attach_size  INTEGER", nullptr);
+            if (!hasCol("attach_ext"))   execSql(db2, "ALTER TABLE messages ADD COLUMN attach_ext   TEXT", nullptr);
+            if (!hasCol("attach_url"))   execSql(db2, "ALTER TABLE messages ADD COLUMN attach_url   TEXT", nullptr);
+            if (!hasCol("attach_mime"))  execSql(db2, "ALTER TABLE messages ADD COLUMN attach_mime  TEXT", nullptr);
+            closeDb(db2);
+        }
+    }
+
     closeDb(db);
+
     if (ok) {
         Logger::instance().info(
             QString("CacheDb 已就绪: %1").arg(dbPath()), "cache");
@@ -453,8 +586,9 @@ bool replaceMessagesInternal(sqlite3* db, const QString& accId, const QString& t
 
     const QString sql = R"SQL(
         INSERT INTO messages (acc_id, talker, msg_id, sender_id, sender_name, is_sender,
-                              type, sub_type, content, display, time)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                              type, sub_type, content, display, time,
+                              attach_title, attach_size, attach_ext, attach_url, attach_mime)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
     )SQL";
     sqlite3_stmt* ins = nullptr;
     sqlite3_prepare_v2(db, sql.toUtf8().constData(), -1, &ins, nullptr);
@@ -471,6 +605,11 @@ bool replaceMessagesInternal(sqlite3* db, const QString& accId, const QString& t
         sqlite3_bind_text  (ins, 9, m["content"].toString().toUtf8().constData(),    -1, SQLITE_TRANSIENT);
         sqlite3_bind_text  (ins,10, m["display"].toString().toUtf8().constData(),    -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64 (ins,11, m["time"].toLongLong());
+        sqlite3_bind_text  (ins,12, m["attachTitle"].toString().toUtf8().constData(),-1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64 (ins,13, m["attachSize"].toLongLong());
+        sqlite3_bind_text  (ins,14, m["attachExt"].toString().toUtf8().constData(),  -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text  (ins,15, m["attachUrl"].toString().toUtf8().constData(),  -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text  (ins,16, m["attachMime"].toString().toUtf8().constData(), -1, SQLITE_TRANSIENT);
         sqlite3_step(ins);
     }
     sqlite3_finalize(ins);
@@ -491,12 +630,16 @@ bool upsertMessagesInternal(sqlite3* db, const QString& accId, const QString& ta
                              const QList<QVariantMap>& rows) {
     const QString sql = R"SQL(
         INSERT INTO messages (acc_id, talker, msg_id, sender_id, sender_name, is_sender,
-                              type, sub_type, content, display, time)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                              type, sub_type, content, display, time,
+                              attach_title, attach_size, attach_ext, attach_url, attach_mime)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         ON CONFLICT(acc_id, msg_id) DO UPDATE SET
             sender_id=excluded.sender_id, sender_name=excluded.sender_name,
             content=excluded.content, display=excluded.display,
-            type=excluded.type, sub_type=excluded.sub_type, time=excluded.time
+            type=excluded.type, sub_type=excluded.sub_type, time=excluded.time,
+            attach_title=excluded.attach_title, attach_size=excluded.attach_size,
+            attach_ext=excluded.attach_ext, attach_url=excluded.attach_url,
+            attach_mime=excluded.attach_mime
     )SQL";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql.toUtf8().constData(), -1, &stmt, nullptr) != SQLITE_OK)
@@ -514,6 +657,11 @@ bool upsertMessagesInternal(sqlite3* db, const QString& accId, const QString& ta
         sqlite3_bind_text  (stmt, 9, m["content"].toString().toUtf8().constData(),    -1, SQLITE_TRANSIENT);
         sqlite3_bind_text  (stmt,10, m["display"].toString().toUtf8().constData(),    -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64 (stmt,11, m["time"].toLongLong());
+        sqlite3_bind_text  (stmt,12, m["attachTitle"].toString().toUtf8().constData(),-1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64 (stmt,13, m["attachSize"].toLongLong());
+        sqlite3_bind_text  (stmt,14, m["attachExt"].toString().toUtf8().constData(),  -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text  (stmt,15, m["attachUrl"].toString().toUtf8().constData(),  -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text  (stmt,16, m["attachMime"].toString().toUtf8().constData(), -1, SQLITE_TRANSIENT);
         sqlite3_step(stmt);
     }
     sqlite3_finalize(stmt);
@@ -537,8 +685,9 @@ QList<QVariantMap> CacheDb::loadMessages(const QString& accId, const QString& ta
     if (!openDb(&db, nullptr)) return out;
     QString sql =
         "SELECT msg_id, sender_id, sender_name, is_sender, type, sub_type, "
-        "content, display, time FROM messages "
-        "WHERE acc_id=?1 AND talker=?2 ORDER BY time ASC";
+        "content, display, time, "
+        "attach_title, attach_size, attach_ext, attach_url, attach_mime "
+        "FROM messages WHERE acc_id=?1 AND talker=?2 ORDER BY time ASC";
     if (limit > 0) sql += QString(" LIMIT %1").arg(limit);
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql.toUtf8().constData(), -1, &stmt, nullptr) == SQLITE_OK) {
@@ -555,6 +704,11 @@ QList<QVariantMap> CacheDb::loadMessages(const QString& accId, const QString& ta
             m["content"]    = QString::fromUtf8((const char*)sqlite3_column_text(stmt, 6));
             m["display"]    = QString::fromUtf8((const char*)sqlite3_column_text(stmt, 7));
             m["time"]       = qint64(sqlite3_column_int64(stmt, 8));
+            m["attachTitle"] = QString::fromUtf8((const char*)sqlite3_column_text(stmt, 9));
+            m["attachSize"]  = qint64(sqlite3_column_int64(stmt, 10));
+            m["attachExt"]   = QString::fromUtf8((const char*)sqlite3_column_text(stmt, 11));
+            m["attachUrl"]   = QString::fromUtf8((const char*)sqlite3_column_text(stmt, 12));
+            m["attachMime"]  = QString::fromUtf8((const char*)sqlite3_column_text(stmt, 13));
             out.append(m);
         }
     }

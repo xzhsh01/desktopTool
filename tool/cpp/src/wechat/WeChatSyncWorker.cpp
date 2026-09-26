@@ -116,6 +116,37 @@ void WeChatSyncWorker::unwatchAccount(const QString& accId) {
     m_watchedDirs.erase(it);
 }
 
+// 异步加载单联系人详细信息（在 worker 线程，不阻塞 UI）
+void WeChatSyncWorker::loadContactDetail(const QString& accId, const QString& wxid) {
+    if (wxid.isEmpty()) return;
+    auto* acc = WeChatAccountManager::instance().getById(accId);
+    if (!acc) return;
+    const QString key = WeChatAccountManager::instance().keyForAccount(*acc);
+
+    WeChatDb db(acc->id, acc->dataDir, key);
+    if (!db.ensureDecrypted()) return;
+
+    const auto d = db.loadContactDetail(wxid);
+    QVariantMap m;
+    m["userName"]     = d.userName;
+    m["alias"]        = d.alias;
+    m["nickname"]     = d.nickname;
+    m["remark"]       = d.remark;
+    m["display"]      = d.display;
+    m["type"]         = d.type;
+    m["verifyFlag"]   = d.verifyFlag;
+    m["isRoom"]       = d.isChatRoom;
+    m["smallHeadUrl"] = d.smallHeadUrl;
+    m["bigHeadUrl"]   = d.bigHeadUrl;
+    m["signature"]    = d.signature;
+    m["province"]     = d.province;
+    m["city"]         = d.city;
+    m["country"]      = d.country;
+    m["sex"]          = d.sex;
+
+    emit contactDetailReady(accId, wxid, m);
+}
+
 // ── 内部实现 ─────────────────────────────────────────────────────────
 
 bool WeChatSyncWorker::syncAccountMeta(const QString& accId) {
@@ -244,6 +275,8 @@ bool WeChatSyncWorker::syncAccountMessages(const QString& accId) {
             vm["content"]    = m.content;
             vm["display"]    = m.display;
             vm["time"]       = m.time.toSecsSinceEpoch();
+            // 解析附件元信息（XML 复合消息、媒体消息）
+            CacheDb::parseAttachMeta(m.type, m.subType, m.content, vm);
             vl.append(vm);
         }
         if (msgs.isEmpty()) {

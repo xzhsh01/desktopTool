@@ -3,6 +3,7 @@
 #include <QHash>
 #include <QPair>
 #include <QSet>
+#include <QDateTime>
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
@@ -90,6 +91,10 @@ private slots:
     void onSyncFinished(const QString& accId, qint64 elapsedMs);
     void onSyncFailed(const QString& accId, const QString& reason);
 
+    // 联系人详细信息异步到达 → 更新 UI（如果还在显示同一联系人）
+    void onContactDetailReady(const QString& accId, const QString& wxid,
+                              const QVariantMap& detail);
+
     // 状态栏节流刷新（同步进度事件频率很高，合并刷新）
     void onStatusTick();
 
@@ -132,6 +137,13 @@ private:
 
     QString m_currentAccountId;
     QString m_currentTalker;
+    QString m_currentContact;                              // 当前详情页联系人 wxid（onListShowContact 短路用）
+    int     m_lastRenderedMsgCount = 0;     // 当前已渲染气泡数（onListOpenChat 短路用）
+    qint64  m_lastOpenChatMs = 0;           // 上次打开聊天时间戳（时间窗口短路用）
+
+    // sidebar 点击防抖（防连点/抖动触发 watcher + 重读 CacheDb）
+    QString m_lastSidebarAccId;
+    qint64  m_lastSidebarClickMs = 0;
 
     // ── 状态栏节流 ──
     QTimer* m_statusTickTimer = nullptr;

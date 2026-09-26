@@ -33,6 +33,9 @@ public:
     void showChatHeader(const QString& title);                   // 仅切到聊天页 + 改标题
     void showContact(const QVariantMap& contact);                 // 联系人 / 群详情
 
+    // 异步详细信息到达 → 增量更新当前联系人详情（不重渲染其他 widget）
+    void updateContactDetail(const QVariantMap& detail);
+
     // 在聊天页里渲染一组消息（协调者把 db 拉到的原始数据转成 vmap 后传入）
     void renderMessages(const QList<QVariantMap>& msgs,
                         const QString& currentTalker);
@@ -57,4 +60,6 @@ private:
     QWidget*        m_contactPage  = nullptr;
 
     QString m_currentTalker;                                // 用于渲染头像/群名
+    QString m_currentShownContact;                          // showContact 短路用（按 wxid）
+    int     m_renderedMsgCount = 0;                         // renderMessages 内部短路用
 };
