@@ -2,6 +2,7 @@
 #include "WeChatAccountManager.h"
 #include "WeChatDb.h"
 #include "WeChatKeyExtractor.h"
+#include "WeChatWorker.h"
 #include "app/Theme.h"
 #include "core/Logger.h"
 
@@ -20,6 +21,7 @@
 #include <QListWidgetItem>
 #include <QFile>
 #include <QPointer>
+#include <QThread>
 #include <thread>
 #include <atomic>
 
@@ -32,12 +34,33 @@ WeChatConfigDialog::WeChatConfigDialog(QWidget* parent, const QString& editId)
     setStyleSheet(QString("QDialog{background:%1;}").arg(Theme::kBg));
     buildUi();
     if (!editId.isEmpty()) loadAccount();
+
+    // 单次密钥提取专用 worker（避免 extractKey 阻塞 UI）
+    m_extractThread = new QThread(this);
+    m_extractWorker = new WeChatWorker;
+    m_extractWorker->moveToThread(m_extractThread);
+    connect(m_extractThread, &QThread::finished,
+            m_extractWorker, &QObject::deleteLater);
+    connect(m_extractWorker, &WeChatWorker::keyExtracted,
+            this, &WeChatConfigDialog::onExtractKeyDone);
+    m_extractThread->start();
 }
 
 WeChatConfigDialog::~WeChatConfigDialog() {
     // 取消并等待后台扫描结束，避免线程读 m_hintLabel 等已析构对象
     m_scanCancel.store(true);
     cleanupScanThread();
+
+    // 关闭密钥提取线程
+    if (m_extractThread) {
+        m_extractThread->quit();
+        if (!m_extractThread->wait(3000)) {
+            Logger::instance().warn("WeChatConfigDialog extract thread didn't exit in 3s",
+                                    "wechat");
+            m_extractThread->terminate();
+            m_extractThread->wait();
+        }
+    }
 }
 
 void WeChatConfigDialog::cleanupScanThread() {
@@ -390,19 +413,27 @@ void WeChatConfigDialog::extractKey() {
         m_hintLabel->setStyleSheet(Theme::statusErr());
         return;
     }
-    QApplication::setOverrideCursor(Qt::WaitCursor);
+    // 提交后台线程执行（不阻塞 UI）
     m_hintLabel->setStyleSheet(Theme::mutedText());
-    m_hintLabel->setText("正在从微信进程提取密钥…");
-    QApplication::processEvents();
-    QString err;
-    const QString key = WeChatKeyExtractor::extractFromRunningWeChat(db, &err);
+    m_hintLabel->setText("正在从微信进程提取密钥（后台进行中，可继续操作）…");
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    m_extractBtn->setEnabled(false);
+    QMetaObject::invokeMethod(m_extractWorker, "extractKey",
+                              Qt::QueuedConnection,
+                              Q_ARG(QString, db));
+}
+
+void WeChatConfigDialog::onExtractKeyDone(const QString& key, const QString& err) {
     QApplication::restoreOverrideCursor();
+    m_extractBtn->setEnabled(true);
     if (!key.isEmpty()) {
         m_keyEdit->setText(key);
         m_hintLabel->setText("密钥提取成功 ✓");
         m_hintLabel->setStyleSheet(Theme::statusOk());
     } else {
-        m_hintLabel->setText(err);
+        m_hintLabel->setText(err.isEmpty()
+                                 ? QStringLiteral("密钥提取失败（未知错误）")
+                                 : err);
         m_hintLabel->setStyleSheet(Theme::statusErr());
     }
 }

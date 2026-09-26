@@ -187,6 +187,7 @@ set(COMMON_SOURCES
     src/wechat/WeChatDb.cpp
     src/wechat/WeChatKeyExtractor.cpp
     src/wechat/WeChatWidget.cpp
+    src/wechat/WeChatWorker.cpp
     src/wechat/ui/WeChatSidebar.cpp
     src/wechat/ui/WeChatDetailPanel.cpp
 )

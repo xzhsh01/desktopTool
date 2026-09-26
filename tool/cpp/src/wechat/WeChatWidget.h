@@ -9,9 +9,11 @@
 class QLabel;
 class QStackedWidget;
 class QSplitter;
+class QThread;
 
 class WeChatSidebar;
 class WeChatDetailPanel;
+class WeChatWorker;
 
 /**
  * WeChatWidget: 微信主界面（协调者）
@@ -37,6 +39,7 @@ class WeChatWidget : public QWidget {
 
 public:
     explicit WeChatWidget(QWidget* parent = nullptr);
+    ~WeChatWidget() override;
 
     // 外部入口（应用管理 / MainWindow 调用）
     void openConfig(const QString& editId = QString());
@@ -56,11 +59,28 @@ private slots:
     void onDeleteAccount(const QString& accId);
     void onRefreshCurrent();
 
+    // worker 完成回调（在主线程接收）
+    void onAccountLoaded(const QString& accId,
+                         const QVariantList& sessions,
+                         const QVariantList& contacts);
+    void onAccountFailed(const QString& accId, const QString& reason);
+    void onMessagesLoaded(const QString& accId,
+                          const QString& talker,
+                          const QString& title,
+                          const QList<QVariantMap>& messages);
+    void onMessagesFailed(const QString& accId,
+                          const QString& talker,
+                          const QString& reason);
+
 private:
     void buildUi();
     void updateEmptyState();                // 切换 m_mainStack
 
-    // 数据加载（按账号缓存）
+    // 启动后台 worker 线程（数据加载专用）
+    void startWorker();
+    // 停止后台 worker 线程（析构时调用）
+    void stopWorker();
+    // 数据加载（按账号缓存；命中缓存直接返回，未命中交给 worker）
     bool loadAccountData(const QString& accId);
     void setStatus(const QString& text);
 
@@ -71,7 +91,10 @@ private:
     QSplitter*        m_splitter    = nullptr;
     WeChatSidebar*    m_sidebar     = nullptr;
     WeChatDetailPanel* m_detailPanel = nullptr;
-    QLabel*           m_statusLabel = nullptr;
+
+    // ── 后台线程（数据加载专用） ──
+    QThread*      m_loadThread = nullptr;
+    WeChatWorker* m_loadWorker = nullptr;
 
     // ── 缓存 ──
     QHash<QString, QVariantList> m_sessionsCache;

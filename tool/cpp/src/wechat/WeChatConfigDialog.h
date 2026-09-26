@@ -11,6 +11,8 @@ class QLabel;
 class QPushButton;
 class QListWidget;
 class QStackedWidget;
+class QThread;
+class WeChatWorker;
 
 /**
  * WeChatConfigDialog: 微信账号配置对话框
@@ -39,6 +41,7 @@ private slots:
     void extractKey();
     void onScanProgress(const QString& msg);
     void onScanExtractDone();
+    void onExtractKeyDone(const QString& key, const QString& err);
 
 private:
     void buildUi();
@@ -63,4 +66,9 @@ private:
     std::thread* m_scanThread = nullptr;
 
     void cleanupScanThread();      // join + delete（仅主线程调用）
+
+    // 单次密钥提取（点「从微信自动提取」按钮时）走专用 worker 线程，
+    // 避免扫描进程内存时阻塞 UI
+    QThread*      m_extractThread = nullptr;
+    WeChatWorker* m_extractWorker = nullptr;
 };
