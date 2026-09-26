@@ -1,0 +1,140 @@
+{
+    "_comment": "UI 文本默认配置。点号路径在代码里通过 Labels::instance().get(path) 取值；用户可在 %APPDATA%/KFrame/bambooRat/labels.json 里覆盖任意 key。",
+
+    "common": {
+        "ok": "确定",
+        "cancel": "取消",
+        "save": "保存",
+        "delete": "删除",
+        "edit": "编辑",
+        "close": "关闭",
+        "browse": "浏览...",
+        "savedOk": "✓ 已保存",
+        "minimizeToTray": "关闭窗口时最小化到系统托盘",
+        "yes": "是",
+        "no": "否"
+    },
+
+    "main": {
+        "windowTitle": "bambooRat (BR)",
+        "collapseSidebar": "«  收起侧栏",
+        "expandSidebar": "»  展开侧栏",
+        "newButton": "＋ 新建",
+        "minButton": "–",
+        "maxButton": "□",
+        "closeButton": "×",
+        "funcSection": "  功能"
+    },
+
+    "sidebar": {
+        "dashboard":   "仪表盘",
+        "connections": "应用管理",
+        "ssh":         "SSH 终端",
+        "database":    "数据库",
+        "redis":       "Redis",
+        "rdp":         "远程桌面",
+        "mail":        "邮箱",
+        "files":       "文件管理",
+        "documents":   "文档"
+    },
+
+    "settings": {
+        "title": "设置",
+        "general": {
+            "title": "通用",
+            "theme": "主题:",
+            "themeDark": "深色",
+            "themeLight": "浅色",
+            "language": "语言:",
+            "langZh": "简体中文",
+            "langEn": "English",
+            "minimizeToTray": "关闭窗口时最小化到系统托盘",
+            "timeout": "连接超时:",
+            "timeoutUnit": " 秒"
+        },
+        "update": {
+            "title": "更新",
+            "autoCheck": "启动时自动检查更新",
+            "urlPlaceholder": "更新服务器 URL",
+            "urlLabel": "更新地址:"
+        },
+        "data": {
+            "title": "数据管理",
+            "downloadDirPlaceholder": "文件下载默认目录",
+            "downloadDirLabel": "下载目录:",
+            "maxFileSize": "最大文件大小:",
+            "maxFileSizeUnit": " MB",
+            "openDirBtn": "打开数据目录",
+            "clearLogsBtn": "清空日志",
+            "clearConnsBtn": "删除所有连接",
+            "actionsLabel": "数据操作:"
+        },
+        "mail": {
+            "title": "邮件加密",
+            "manageCertBtn": "管理 S/MIME 证书…",
+            "manageCertTip": "管理 S/MIME 个人证书与联系人公钥（用于邮件加密）",
+            "certTipPerson": "个人证书（含私钥）：解密别人发给你的 S/MIME 邮件 / 签名你的邮件",
+            "certTipContact": "联系人公钥：给对方发送加密邮件前需要先导入对方的 .pem/.crt",
+            "certLabel": "证书:"
+        },
+        "log": {
+            "title": "日志",
+            "levelLabel": "日志级别:",
+            "levelDebug": "Debug",
+            "levelInfo": "Info",
+            "levelWarn": "Warn",
+            "levelError": "Error",
+            "retentionLabel": "日志保留:",
+            "retentionUnit": " 天"
+        },
+        "actions": {
+            "saveBtn": "保存设置",
+            "resetBtn": "恢复默认",
+            "resetTitle": "恢复默认",
+            "resetConfirm": "确定将所有设置恢复为默认值吗？",
+            "savedLog": "设置已保存"
+        }
+    },
+
+    "mail": {
+        "status": {
+            "accountAdded": "账号已添加",
+            "accountUpdated": "账号已更新",
+            "setAsDefault": "已设为默认账号",
+            "draftDeleted": "草稿已删除",
+            "mailDeleted": "邮件已删除（本地）",
+            "sending": "发送中...",
+            "sentOk": "✓ 已发送",
+            "sendFailed": "✗ 发送失败",
+            "noAccount": "请先添加邮箱账号",
+            "syncing": "正在同步邮件..."
+        },
+        "context": {
+            "new": "新邮件"
+        },
+        "editor": {
+            "sendBtn": "发送",
+            "saveDraftBtn": "保存草稿",
+            "discardBtn": "放弃",
+            "templateBtn": "📋 模板",
+            "scheduleBtn": "\xE2\x8F\xB0 定时发送",
+            "scheduleBtnActive": "\xE2\x8C\x95 定时发送",
+            "scheduleTip": "点击设置定时发送时间；到点自动发送（不点则按普通方式发送）",
+            "scheduleTipActive": "点击重新设置或取消定时发送",
+            "scheduleScheduledPrefix": "定时 %1",
+            "scheduleTitle": "选择定时发送时间",
+            "scheduleLabel": "邮件将在指定时间发送：",
+            "scheduleConfirmTitle": "定时发送",
+            "scheduleConfirmText": "当前已设置定时发送（%1）。是否取消？",
+            "scheduleCancelBtn": "取消定时",
+            "scheduleFailedTitle": "定时发送失败",
+            "scheduleFailedText": "无法写入定时队列磁盘文件，请检查 AppData 目录权限。",
+            "scheduledQueueAdded": "\xE2\x8C\x95 已加入定时队列: %1 (%2)",
+            "encryptLabel": "\xF0\x9F\x94\x92",
+            "encryptNone": "\xF0\x9F\x94\x92 不加密",
+            "encryptAuto": "\xF0\x9F\x94\x92 自动 (S/MIME→口令)",
+            "encryptSmime": "\xF0\x9F\x94\x92 强制 S/MIME",
+            "encryptPassword": "\xF0\x9F\x94\x92 口令加密"
+        }
+    }
+}

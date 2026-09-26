@@ -1,0 +1,12 @@
+{
+	"InstallScripts" : 
+	[
+		"F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/cmake_install.cmake",
+		"F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/doc/cmake_install.cmake",
+		"F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/include/cmake_install.cmake",
+		"F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/include/libssh/cmake_install.cmake",
+		"F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src/cmake_install.cmake",
+		"F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

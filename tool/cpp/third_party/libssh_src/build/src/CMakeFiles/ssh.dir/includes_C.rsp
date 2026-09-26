@@ -1,0 +1,1 @@
+-IF:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src -IF:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src -IF:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/include -IF:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/include -IF:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build -isystem C:/Qt/Tools/mingw1310_64/opt/include

@@ -1,0 +1,10 @@
+prefix=F:/KFrame/desktopTool/tool/cpp/third_party/libssh
+exec_prefix=${prefix}
+libdir=F:/KFrame/desktopTool/tool/cpp/third_party/libssh/lib
+includedir=F:/KFrame/desktopTool/tool/cpp/third_party/libssh/include
+
+Name: libssh
+Description: The SSH Library
+Version: 0.11.1
+Libs: -L${libdir} -lssh
+Cflags: -I${includedir}

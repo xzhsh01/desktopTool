@@ -1,0 +1,3 @@
+"E:\Program Files\CMake\bin\cmake.exe" -E rm -f CMakeFiles\keygen.dir/objects.a
+C:\Qt\Tools\mingw1310_64\bin\ar.exe qc CMakeFiles\keygen.dir/objects.a @CMakeFiles\keygen.dir\objects1.rsp
+C:\Qt\Tools\mingw1310_64\bin\gcc.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\keygen.dir/objects.a -Wl,--no-whole-archive -o keygen.exe -Wl,--out-implib,libkeygen.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\keygen.dir\linkLibs.rsp

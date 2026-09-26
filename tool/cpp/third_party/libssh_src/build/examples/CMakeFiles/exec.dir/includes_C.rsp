@@ -1,0 +1,1 @@
+-IF:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples -IF:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples -IF:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/include -IF:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build -IF:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/include

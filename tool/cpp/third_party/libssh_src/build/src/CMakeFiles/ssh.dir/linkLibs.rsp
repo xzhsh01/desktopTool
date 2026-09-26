@@ -1,0 +1,1 @@
+ C:/Qt/Tools/mingw1310_64/opt/lib/libcrypto.dll.a -liphlpapi -lws2_32 -Wl,--enable-stdcall-fixup -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32 

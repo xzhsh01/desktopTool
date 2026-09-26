@@ -1,0 +1,66 @@
+#pragma once
+
+#include <QDialog>
+#include <QMap>
+#include <atomic>
+#include <thread>
+
+class QLineEdit;
+class QComboBox;
+class QLabel;
+class QPushButton;
+class QListWidget;
+class QStackedWidget;
+
+/**
+ * WeChatConfigDialog: 微信账号配置对话框
+ *
+ * 流程：
+ *   1. 「扫描本机微信」→ 列出发现的微信账号（支持多账号，逐个添加）
+ *      微信在运行时自动从进程内存提取密钥并填充
+ *   2. 选择账号 → 自动填充 wxid / 数据目录 / 版本 / 密钥
+ *   3. 「测试密钥」→ 校验密钥能否解开数据库
+ *   4. 保存
+ */
+class WeChatConfigDialog : public QDialog {
+    Q_OBJECT
+
+public:
+    // editId 非空时为编辑模式
+    explicit WeChatConfigDialog(QWidget* parent = nullptr,
+                                const QString& editId = QString());
+    ~WeChatConfigDialog() override;
+
+private slots:
+    void scanLocal();
+    void onDiscoveredSelected(int row);
+    void browseDataDir();
+    void testKey();
+    void extractKey();
+    void onScanProgress(const QString& msg);
+    void onScanExtractDone();
+
+private:
+    void buildUi();
+    void loadAccount();
+    // 数据目录对应的验证数据库（4.x: message_0.db/contact.db；3.x: Msg/MicroMsg.db）
+    static QString verifyDbFor(const QString& dir, const QString& version);
+
+    QString m_editId;
+    QLineEdit* m_nameEdit = nullptr;
+    QLineEdit* m_wxidEdit = nullptr;
+    QLineEdit* m_dirEdit = nullptr;
+    QLineEdit* m_keyEdit = nullptr;
+    QComboBox* m_versionCombo = nullptr;
+    QListWidget* m_scanList = nullptr;
+    QLabel* m_hintLabel = nullptr;
+    QPushButton* m_testBtn = nullptr;
+    QPushButton* m_extractBtn = nullptr;
+    QMap<QString, QString> m_scanKeys;  // 扫描提取的密钥：wxid → keyHex
+
+    // 后台密钥提取（避免 50+ 候选 × 多账号 verifyKey 在主线程阻塞 UI）
+    std::atomic<bool> m_scanCancel{false};
+    std::thread* m_scanThread = nullptr;
+
+    void cleanupScanThread();      // join + delete（仅主线程调用）
+};

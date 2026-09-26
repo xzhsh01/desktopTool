@@ -1,0 +1,10 @@
+prefix=C:/Program Files (x86)/libssh
+exec_prefix=${prefix}
+libdir=C:/Program Files (x86)/libssh/lib
+includedir=C:/Program Files (x86)/libssh/include
+
+Name: libssh
+Description: The SSH Library
+Version: 0.11.1
+Libs: -L${libdir} -lssh
+Cflags: -I${includedir}

@@ -1,0 +1,428 @@
+[
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\agent.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\agent.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/agent.c",
+  "output": "src/CMakeFiles/ssh.dir/agent.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\auth.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\auth.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/auth.c",
+  "output": "src/CMakeFiles/ssh.dir/auth.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\base64.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\base64.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/base64.c",
+  "output": "src/CMakeFiles/ssh.dir/base64.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\bignum.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\bignum.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/bignum.c",
+  "output": "src/CMakeFiles/ssh.dir/bignum.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\buffer.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\buffer.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/buffer.c",
+  "output": "src/CMakeFiles/ssh.dir/buffer.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\callbacks.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\callbacks.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/callbacks.c",
+  "output": "src/CMakeFiles/ssh.dir/callbacks.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\channels.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\channels.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/channels.c",
+  "output": "src/CMakeFiles/ssh.dir/channels.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\client.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\client.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/client.c",
+  "output": "src/CMakeFiles/ssh.dir/client.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\config.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\config.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/config.c",
+  "output": "src/CMakeFiles/ssh.dir/config.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\connect.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\connect.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/connect.c",
+  "output": "src/CMakeFiles/ssh.dir/connect.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\connector.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\connector.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/connector.c",
+  "output": "src/CMakeFiles/ssh.dir/connector.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\crypto_common.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\crypto_common.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/crypto_common.c",
+  "output": "src/CMakeFiles/ssh.dir/crypto_common.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\curve25519.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\curve25519.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/curve25519.c",
+  "output": "src/CMakeFiles/ssh.dir/curve25519.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\dh.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\dh.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/dh.c",
+  "output": "src/CMakeFiles/ssh.dir/dh.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\ecdh.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\ecdh.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/ecdh.c",
+  "output": "src/CMakeFiles/ssh.dir/ecdh.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\error.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\error.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/error.c",
+  "output": "src/CMakeFiles/ssh.dir/error.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\getpass.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\getpass.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/getpass.c",
+  "output": "src/CMakeFiles/ssh.dir/getpass.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\init.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\init.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/init.c",
+  "output": "src/CMakeFiles/ssh.dir/init.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\kdf.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\kdf.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/kdf.c",
+  "output": "src/CMakeFiles/ssh.dir/kdf.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\kex.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\kex.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/kex.c",
+  "output": "src/CMakeFiles/ssh.dir/kex.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\known_hosts.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\known_hosts.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/known_hosts.c",
+  "output": "src/CMakeFiles/ssh.dir/known_hosts.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\knownhosts.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\knownhosts.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/knownhosts.c",
+  "output": "src/CMakeFiles/ssh.dir/knownhosts.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\legacy.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\legacy.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/legacy.c",
+  "output": "src/CMakeFiles/ssh.dir/legacy.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\log.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\log.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/log.c",
+  "output": "src/CMakeFiles/ssh.dir/log.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\match.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\match.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/match.c",
+  "output": "src/CMakeFiles/ssh.dir/match.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\messages.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\messages.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/messages.c",
+  "output": "src/CMakeFiles/ssh.dir/messages.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\misc.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\misc.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/misc.c",
+  "output": "src/CMakeFiles/ssh.dir/misc.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\options.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\options.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/options.c",
+  "output": "src/CMakeFiles/ssh.dir/options.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\packet.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\packet.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/packet.c",
+  "output": "src/CMakeFiles/ssh.dir/packet.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\packet_cb.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\packet_cb.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/packet_cb.c",
+  "output": "src/CMakeFiles/ssh.dir/packet_cb.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\packet_crypt.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\packet_crypt.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/packet_crypt.c",
+  "output": "src/CMakeFiles/ssh.dir/packet_crypt.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\pcap.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\pcap.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/pcap.c",
+  "output": "src/CMakeFiles/ssh.dir/pcap.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\pki.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\pki.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/pki.c",
+  "output": "src/CMakeFiles/ssh.dir/pki.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\pki_container_openssh.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\pki_container_openssh.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/pki_container_openssh.c",
+  "output": "src/CMakeFiles/ssh.dir/pki_container_openssh.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\poll.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\poll.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/poll.c",
+  "output": "src/CMakeFiles/ssh.dir/poll.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\session.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\session.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/session.c",
+  "output": "src/CMakeFiles/ssh.dir/session.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\scp.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\scp.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/scp.c",
+  "output": "src/CMakeFiles/ssh.dir/scp.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\socket.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\socket.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/socket.c",
+  "output": "src/CMakeFiles/ssh.dir/socket.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\string.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\string.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/string.c",
+  "output": "src/CMakeFiles/ssh.dir/string.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\threads.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\threads.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/threads.c",
+  "output": "src/CMakeFiles/ssh.dir/threads.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\ttyopts.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\ttyopts.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/ttyopts.c",
+  "output": "src/CMakeFiles/ssh.dir/ttyopts.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\wrapper.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\wrapper.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/wrapper.c",
+  "output": "src/CMakeFiles/ssh.dir/wrapper.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\external\\bcrypt_pbkdf.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\external\\bcrypt_pbkdf.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/external/bcrypt_pbkdf.c",
+  "output": "src/CMakeFiles/ssh.dir/external/bcrypt_pbkdf.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\external\\blowfish.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\external\\blowfish.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/external/blowfish.c",
+  "output": "src/CMakeFiles/ssh.dir/external/blowfish.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\config_parser.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\config_parser.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/config_parser.c",
+  "output": "src/CMakeFiles/ssh.dir/config_parser.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\token.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\token.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/token.c",
+  "output": "src/CMakeFiles/ssh.dir/token.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\pki_ed25519_common.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\pki_ed25519_common.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/pki_ed25519_common.c",
+  "output": "src/CMakeFiles/ssh.dir/pki_ed25519_common.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\threads\\noop.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\threads\\noop.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/threads/noop.c",
+  "output": "src/CMakeFiles/ssh.dir/threads/noop.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\threads\\pthread.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\threads\\pthread.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/threads/pthread.c",
+  "output": "src/CMakeFiles/ssh.dir/threads/pthread.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\threads\\libcrypto.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\threads\\libcrypto.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/threads/libcrypto.c",
+  "output": "src/CMakeFiles/ssh.dir/threads/libcrypto.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\pki_crypto.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\pki_crypto.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/pki_crypto.c",
+  "output": "src/CMakeFiles/ssh.dir/pki_crypto.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\ecdh_crypto.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\ecdh_crypto.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/ecdh_crypto.c",
+  "output": "src/CMakeFiles/ssh.dir/ecdh_crypto.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\getrandom_crypto.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\getrandom_crypto.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/getrandom_crypto.c",
+  "output": "src/CMakeFiles/ssh.dir/getrandom_crypto.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\md_crypto.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\md_crypto.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/md_crypto.c",
+  "output": "src/CMakeFiles/ssh.dir/md_crypto.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\libcrypto.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\libcrypto.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/libcrypto.c",
+  "output": "src/CMakeFiles/ssh.dir/libcrypto.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\dh_crypto.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\dh_crypto.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/dh_crypto.c",
+  "output": "src/CMakeFiles/ssh.dir/dh_crypto.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\sftp.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\sftp.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/sftp.c",
+  "output": "src/CMakeFiles/ssh.dir/sftp.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\sftp_common.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\sftp_common.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/sftp_common.c",
+  "output": "src/CMakeFiles/ssh.dir/sftp_common.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\sftp_aio.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\sftp_aio.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/sftp_aio.c",
+  "output": "src/CMakeFiles/ssh.dir/sftp_aio.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/src",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC -D_POSIX_SOURCE @CMakeFiles\\ssh.dir\\includes_C.rsp -O3 -DNDEBUG -std=gnu99 -o CMakeFiles\\ssh.dir\\dh-gex.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\src\\dh-gex.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/src/dh-gex.c",
+  "output": "src/CMakeFiles/ssh.dir/dh-gex.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC @CMakeFiles\\exec.dir\\includes_C.rsp -O3 -DNDEBUG -o CMakeFiles\\exec.dir\\exec.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\examples\\exec.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples/exec.c",
+  "output": "examples/CMakeFiles/exec.dir/exec.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC @CMakeFiles\\exec.dir\\includes_C.rsp -O3 -DNDEBUG -o CMakeFiles\\exec.dir\\authentication.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\examples\\authentication.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples/authentication.c",
+  "output": "examples/CMakeFiles/exec.dir/authentication.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC @CMakeFiles\\exec.dir\\includes_C.rsp -O3 -DNDEBUG -o CMakeFiles\\exec.dir\\knownhosts.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\examples\\knownhosts.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples/knownhosts.c",
+  "output": "examples/CMakeFiles/exec.dir/knownhosts.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC @CMakeFiles\\exec.dir\\includes_C.rsp -O3 -DNDEBUG -o CMakeFiles\\exec.dir\\connect_ssh.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\examples\\connect_ssh.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples/connect_ssh.c",
+  "output": "examples/CMakeFiles/exec.dir/connect_ssh.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC @CMakeFiles\\senddata.dir\\includes_C.rsp -O3 -DNDEBUG -o CMakeFiles\\senddata.dir\\senddata.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\examples\\senddata.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples/senddata.c",
+  "output": "examples/CMakeFiles/senddata.dir/senddata.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC @CMakeFiles\\senddata.dir\\includes_C.rsp -O3 -DNDEBUG -o CMakeFiles\\senddata.dir\\authentication.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\examples\\authentication.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples/authentication.c",
+  "output": "examples/CMakeFiles/senddata.dir/authentication.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC @CMakeFiles\\senddata.dir\\includes_C.rsp -O3 -DNDEBUG -o CMakeFiles\\senddata.dir\\knownhosts.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\examples\\knownhosts.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples/knownhosts.c",
+  "output": "examples/CMakeFiles/senddata.dir/knownhosts.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC @CMakeFiles\\senddata.dir\\includes_C.rsp -O3 -DNDEBUG -o CMakeFiles\\senddata.dir\\connect_ssh.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\examples\\connect_ssh.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples/connect_ssh.c",
+  "output": "examples/CMakeFiles/senddata.dir/connect_ssh.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\gcc.exe -DLIBSSH_STATIC @CMakeFiles\\keygen.dir\\includes_C.rsp -O3 -DNDEBUG -o CMakeFiles\\keygen.dir\\keygen.c.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\examples\\keygen.c",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples/keygen.c",
+  "output": "examples/CMakeFiles/keygen.dir/keygen.c.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\c++.exe -DLIBSSH_STATIC @CMakeFiles\\libsshpp.dir\\includes_CXX.rsp -O3 -DNDEBUG -o CMakeFiles\\libsshpp.dir\\libsshpp.cpp.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\examples\\libsshpp.cpp",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples/libsshpp.cpp",
+  "output": "examples/CMakeFiles/libsshpp.dir/libsshpp.cpp.obj"
+},
+{
+  "directory": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/build/examples",
+  "command": "C:\\Qt\\Tools\\mingw1310_64\\bin\\c++.exe -DLIBSSH_STATIC @CMakeFiles\\libsshpp_noexcept.dir\\includes_CXX.rsp -O3 -DNDEBUG -o CMakeFiles\\libsshpp_noexcept.dir\\libsshpp_noexcept.cpp.obj -c F:\\KFrame\\desktopTool\\tool\\cpp\\third_party\\libssh_src\\examples\\libsshpp_noexcept.cpp",
+  "file": "F:/KFrame/desktopTool/tool/cpp/third_party/libssh_src/examples/libsshpp_noexcept.cpp",
+  "output": "examples/CMakeFiles/libsshpp_noexcept.dir/libsshpp_noexcept.cpp.obj"
+}
+]
