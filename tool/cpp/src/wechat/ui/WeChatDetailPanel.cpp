@@ -1,14 +1,18 @@
 #include "wechat/ui/WeChatDetailPanel.h"
 #include "app/Theme.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QEventLoop>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
+#include <QPointer>
 #include <QPixmap>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QStackedWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
@@ -153,19 +157,9 @@ void WeChatDetailPanel::renderMessages(const QList<QVariantMap>& msgs,
         msgs.size() > m_renderedMsgCount &&
         m_renderedMsgCount > 0 &&
         m_msgLayout->count() > 1) {
-        // 用已渲染的最后一条消息的时间作为 lastDate 起点（避免重复插日期分隔）
-        // 这里简化为：仅在追加时跳过日期判断，必要时再补一条分隔
-        // 大多数情况下消息是连续的，日期不会跳变
         const int startIdx = m_renderedMsgCount;
-        QDateTime lastDate = QDateTime::currentDateTime();   // 占位；下一行用追加法重算
-        // 找最后一条已渲染消息的时间作为起点（用于日期分隔判断）
-        // 直接遍历追加：从最后一条已渲染消息的下一条开始
         for (int i = startIdx; i < msgs.size(); ++i) {
-            const auto& m = msgs[i];
-            const QDateTime t = QDateTime::fromString(m["time"].toString(), Qt::ISODate);
-            // 这里 lastDate 不准确（占位值），简化处理：只在跨日时由 watcher 触发全量重建
-            m_msgLayout->insertWidget(m_msgLayout->count() - 1, makeBubble(m));
-            (void)lastDate;  // 暂不使用，留给未来改进
+            m_msgLayout->insertWidget(m_msgLayout->count() - 1, makeBubble(msgs[i]));
         }
         m_renderedMsgCount = msgs.size();
         QScrollBar* sb = m_msgScroll->verticalScrollBar();
@@ -176,6 +170,7 @@ void WeChatDetailPanel::renderMessages(const QList<QVariantMap>& msgs,
     // 全量重建（talker 切换 / 消息减少 / 首次渲染）
     m_currentTalker = currentTalker;
     m_renderedMsgCount = msgs.size();
+    m_chunkAppendTalker = currentTalker;   // 标记分块追加目标
 
     // 清掉旧消息（保留末位的 stretch）
     while (m_msgLayout->count() > 1) {
@@ -183,16 +178,79 @@ void WeChatDetailPanel::renderMessages(const QList<QVariantMap>& msgs,
         if (it->widget()) it->widget()->deleteLater();
         delete it;
     }
-    // 按时间升序插入（数据库默认已升序；若 reverse 把 list 倒一下即可）
+
+    // 大消息列表分块渲染：先插入首批 200 条气泡，滚到底部/再加载更多
+    // 避免一次性插入 5000+ QWidget 导致 UI 卡顿
+    constexpr int kFirstChunk = 200;
+    const int total = msgs.size();
+    int inserted = 0;
     QDateTime lastDate;
-    for (const auto& m : msgs) {
-        const QDateTime t = QDateTime::fromString(m["time"].toString(), Qt::ISODate);
-        if (!t.isValid() || t.date() != lastDate.date()) {
-            m_msgLayout->insertWidget(m_msgLayout->count() - 1, makeDateSeparator(t));
-            lastDate = t;
+    auto insertChunk = [&](int from, int to) {
+        for (int i = from; i < to; ++i) {
+            const auto& m = msgs[i];
+            // time 是 qint64 (秒), 直接构造, 不再 QString → ISODate → QDateTime 解析
+            const qint64 ts = m["time"].toLongLong();
+            const QDateTime t = ts > 0 ? QDateTime::fromSecsSinceEpoch(ts) : QDateTime();
+            if (!t.isValid() || t.date() != lastDate.date()) {
+                m_msgLayout->insertWidget(m_msgLayout->count() - 1, makeDateSeparator(t));
+                lastDate = t;
+            }
+            m_msgLayout->insertWidget(m_msgLayout->count() - 1, makeBubble(m));
         }
-        m_msgLayout->insertWidget(m_msgLayout->count() - 1, makeBubble(m));
+    };
+
+    if (total <= kFirstChunk * 2) {
+        // 小列表：一次插入
+        insertChunk(0, total);
+    } else {
+        // 大列表：先插入首批，后续异步追加
+        insertChunk(0, kFirstChunk);
+        inserted = kFirstChunk;
+        QPointer<WeChatDetailPanel> self = this;
+        // msgs 按值捕获（按引用会随 onListOpenChat 返回而失效）
+        auto appendMore = [self, msgsList = msgs, inserted, lastDate]() mutable {
+            if (!self) return;
+            constexpr int kStep = 200;
+            int pos = inserted;
+            // 重新计算 lastDate (来自最后一个已渲染的 bubble): 用 msgsList[pos-1] 的时间
+            QDateTime ld;
+            if (pos > 0) {
+                const qint64 ts = msgsList[pos - 1]["time"].toLongLong();
+                ld = ts > 0 ? QDateTime::fromSecsSinceEpoch(ts) : QDateTime();
+            }
+            while (pos < msgsList.size()) {
+                const int end = qMin(pos + kStep, msgsList.size());
+                for (int i = pos; i < end; ++i) {
+                    const auto& m = msgsList[i];
+                    const qint64 ts = m["time"].toLongLong();
+                    const QDateTime t = ts > 0 ? QDateTime::fromSecsSinceEpoch(ts) : QDateTime();
+                    if (!t.isValid() || t.date() != ld.date()) {
+                        self->m_msgLayout->insertWidget(
+                            self->m_msgLayout->count() - 1, self->makeDateSeparator(t));
+                        ld = t;
+                    }
+                    self->m_msgLayout->insertWidget(
+                        self->m_msgLayout->count() - 1, self->makeBubble(m));
+                }
+                pos = end;
+                // 给 Qt 事件循环机会刷新 UI（不要一口气塞完 5000 个）
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 1);
+            }
+            Q_UNUSED(lastDate);
+        };
+        // 0 延迟：在本函数 return 后, Qt 才会进入事件循环, 此时下一帧才会真正绘制首批
+        // 首批完成后, 通过 queued 单次定时器追加剩余部分
+        // 用 weak 守卫：用户已切换 talker → 取消后续追加（避免脏气泡注入）
+        const QString guardTalker = currentTalker;
+        auto guarded = [self, guardTalker, appendMore]() mutable {
+            if (!self) return;
+            if (self->m_currentTalker != guardTalker ||
+                self->m_chunkAppendTalker != guardTalker) return;
+            appendMore();
+        };
+        QTimer::singleShot(0, this, guarded);
     }
+
     // 滚到底部
     QScrollBar* sb = m_msgScroll->verticalScrollBar();
     sb->setValue(sb->maximum());

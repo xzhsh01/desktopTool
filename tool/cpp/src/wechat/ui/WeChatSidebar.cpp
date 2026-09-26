@@ -3,14 +3,39 @@
 #include "app/Theme.h"
 
 #include <QAction>
+#include <QCryptographicHash>
+#include <QDateTime>
 #include <QHBoxLayout>
+#include <QMap>
 #include <QMenu>
 #include <QPushButton>
+#include <QSet>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
 
 using Account = WeChatAccountManager::Account;
+
+namespace {
+// 列表内容指纹：cache → label 内容指纹；用于判断徽标是否需要刷新
+//   注意：仅对"影响徽标呈现的字段"做哈希，忽略无关字段
+QString labelFingerprint(const QVariantList& list) {
+    if (list.isEmpty()) return QStringLiteral("0");
+    QCryptographicHash h(QCryptographicHash::Sha1);
+    int unreadSum = 0;
+    qint64 latestTs = 0;
+    for (const auto& v : list) {
+        const auto m = v.toMap();
+        unreadSum += m["unread"].toInt();
+        qint64 t = m["time"].toLongLong();
+        if (t > latestTs) latestTs = t;
+    }
+    h.addData(QByteArray::number(unreadSum) + "|" +
+              QByteArray::number(latestTs) + "|" +
+              QByteArray::number(list.size()));
+    return QString::fromLatin1(h.result().toHex());
+}
+} // namespace
 
 WeChatSidebar::WeChatSidebar(QWidget* parent) : QWidget(parent) {
     buildUi();
@@ -47,23 +72,35 @@ void WeChatSidebar::buildUi() {
     topBtnRow->addWidget(refreshBtn);
     lay->addLayout(topBtnRow);
 
-    // ── 树形侧边栏（账号 + 文件夹，不展开叶子） ──
+    // ── 树形侧边栏：账号 → 两个分组头（可点击，不再展开叶子节点） ──
     m_tree = new QTreeWidget;
     m_tree->setHeaderHidden(true);
-    m_tree->setRootIsDecorated(true);
-    m_tree->setExpandsOnDoubleClick(false);          // 单击触发，不靠双击
+    m_tree->setRootIsDecorated(false);            // 根节点不画展开箭头（叶子直接在根下）
+    m_tree->setExpandsOnDoubleClick(false);       // 单击触发
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
-    m_tree->setMinimumWidth(180);
-    m_tree->setIndentation(18);
+    m_tree->setMinimumWidth(200);
+    m_tree->setIndentation(14);
+    m_tree->setUniformRowHeights(true);           // 行数少但仍开启，避免将来扩展时跳变
     m_tree->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+
+    // ── 三态视觉：hover / pressed / selected，都给明确反馈 ──
+    // 关键：branch 透明避免根的连接线泄露；item 留白 + 圆角模拟"卡片"
     m_tree->setStyleSheet(QString(
         "QTreeWidget{background:%1;border:1px solid %2;outline:0;color:%3;}"
-        "QTreeWidget::item{height:30px;border-radius:6px;margin:1px 0;}"
+        "QTreeWidget::item{height:32px;border-radius:6px;margin:1px 4px;"
+        "padding:0 8px;border:none;}"
         "QTreeWidget::item:hover{background:%4;}"
-        "QTreeWidget::item:selected{background:%5;color:%6;}"
+        "QTreeWidget::item:pressed{background:%5;}"
+        "QTreeWidget::item:selected{background:%6;color:%7;font-weight:600;}"
+        "QTreeWidget::item:selected:hover{background:%8;}"
         "QTreeWidget::branch{background:transparent;}")
         .arg(Theme::kBg, Theme::kBorder, Theme::kText,
-             Theme::kSurface, Theme::kBorder, Theme::kAccent));
+             Theme::kSurface,         // hover
+             Theme::kBorder,          // pressed
+             Theme::kAccent,          // selected bg
+             Theme::kBg,              // selected fg（深底配浅色）
+             Theme::kBorder));        // selected:hover
+
     connect(m_tree, &QTreeWidget::itemClicked,
             this, &WeChatSidebar::onTreeItemClicked);
     connect(m_tree, &QTreeWidget::customContextMenuRequested,
@@ -82,10 +119,7 @@ QString WeChatSidebar::currentAccountId() const {
 void WeChatSidebar::selectAccount(const QString& accId) {
     if (!m_tree || accId.isEmpty()) return;
     auto* it = findAccountItem(accId);
-    if (it) {
-        m_tree->setCurrentItem(it);
-        for (auto* p = it; p; p = p->parent()) m_tree->expandItem(p);
-    }
+    if (it) m_tree->setCurrentItem(it);
 }
 
 void WeChatSidebar::rebuildTree(const QString& selectAccId) {
@@ -100,12 +134,15 @@ void WeChatSidebar::rebuildTree(const QString& selectAccId) {
         auto* accItem = makeAccountItem(a.id, a.name);
         m_tree->addTopLevelItem(accItem);
 
-        auto* chatFolder    = makeFolderItem(a.id, "💬 聊天",    NodeChatFolder);
-        auto* contactFolder = makeFolderItem(a.id, "👥 联系人", NodeContactFolder);
-        accItem->addChild(chatFolder);
-        accItem->addChild(contactFolder);
+        auto* contactGroup = makeGroupItem(NodeContactGroup);
+        contactGroup->setData(0, Qt::UserRole, a.id);
+        contactGroup->setText(0, buildContactLabel(m_contactsByAcc.value(a.id)));
+        accItem->addChild(contactGroup);
 
-        accItem->setExpanded(true);   // 默认展开账号
+        auto* chatGroup = makeGroupItem(NodeChatGroup);
+        chatGroup->setData(0, Qt::UserRole, a.id);
+        chatGroup->setText(0, buildChatLabel(m_sessionsByAcc.value(a.id)));
+        accItem->addChild(chatGroup);
     }
     m_tree->blockSignals(false);
 
@@ -122,16 +159,15 @@ QTreeWidgetItem* WeChatSidebar::makeAccountItem(const QString& accId,
     QFont f = it->font(0);
     f.setBold(true);
     it->setFont(0, f);
+    it->setExpanded(true);
+    it->setFlags(Qt::ItemIsEnabled);   // 账号根不响应选中事件
     return it;
 }
 
-QTreeWidgetItem* WeChatSidebar::makeFolderItem(const QString& accId,
-                                                const QString& title,
-                                                NodeType type) const {
+QTreeWidgetItem* WeChatSidebar::makeGroupItem(NodeType type) const {
     auto* it = new QTreeWidgetItem;
-    it->setData(0, Qt::UserRole, accId);
     it->setData(0, NodeTypeRole, type);
-    it->setText(0, title);
+    it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     return it;
 }
 
@@ -144,20 +180,191 @@ QTreeWidgetItem* WeChatSidebar::findAccountItem(const QString& accId) const {
     return nullptr;
 }
 
+// ── 标签生成（HTML 富文本）─────────────────────────────────────
+
+// "💬 聊天  <span bg=#e53935 color=#fff>12</span>"
+QString WeChatSidebar::buildChatLabel(const QVariantList& sessions) const {
+    const int n = sessions.size();
+    int unreadSum = 0;
+    for (const auto& v : sessions) unreadSum += v.toMap()["unread"].toInt();
+
+    QString badge;
+    if (unreadSum > 0) {
+        badge = QString("<span style='background-color:#e53935;color:#ffffff;"
+                        "border-radius:8px;padding:0 6px;margin-left:6px;"
+                        "font-size:10px;font-weight:bold;'>%1</span>")
+                .arg(formatBadge(unreadSum));
+    }
+
+    if (n == 0) {
+        return badge.isEmpty()
+            ? QStringLiteral("💬 聊天")
+            : QStringLiteral("💬 聊天") + badge;
+    }
+    return QString("💬 聊天 <span style='color:%1;'>(%2)</span>")
+            .arg(Theme::kMuted)
+            .arg(n) + badge;
+}
+
+// "👥 联系人  <span muted>1024 · 12:34</span>"  (count + 最新联系人时间)
+QString WeChatSidebar::buildContactLabel(const QVariantList& contacts) const {
+    const int n = contacts.size();
+    if (n == 0) return QStringLiteral("👥 联系人");
+
+    // 取最新联系人时间戳（contacts 通常没有 time 字段，但若有则显示）
+    qint64 latest = 0;
+    for (const auto& v : contacts) {
+        qint64 t = v.toMap()["updateTime"].toLongLong();
+        if (t > latest) latest = t;
+    }
+    QString extra = QString("<span style='color:%1;'>%2</span>")
+                    .arg(Theme::kMuted).arg(n);
+    if (latest > 0) {
+        extra += QString(" <span style='color:%1;'>· %2</span>")
+                 .arg(Theme::kFaint)
+                 .arg(formatRelativeTime(latest));
+    }
+    return QStringLiteral("👥 联系人 ") + extra;
+}
+
+QString WeChatSidebar::formatRelativeTime(qint64 ts) {
+    if (ts <= 0) return QString();
+    const QDateTime dt = QDateTime::fromSecsSinceEpoch(ts);
+    const QDateTime now = QDateTime::currentDateTime();
+    const qint64 diffSecs = dt.secsTo(now);
+    const QDate dToday = now.date();
+    const QDate dMsg   = dt.date();
+
+    if (diffSecs < 60)        return QStringLiteral("刚刚");
+    if (diffSecs < 3600)      return QString("%1分前").arg(diffSecs / 60);
+    if (dMsg == dToday)       return dt.toString("HH:mm");
+    if (dMsg == dToday.addDays(-1))
+        return QStringLiteral("昨天 ") + dt.toString("HH:mm");
+    if (dMsg.year() == dToday.year())
+        return dt.toString("MM-dd");
+    return dt.toString("yyyy-MM-dd");
+}
+
+QString WeChatSidebar::formatBadge(int n) {
+    return n > 99 ? QStringLiteral("99+") : QString::number(n);
+}
+
+// ── 数据灌入与缓存 ──────────────────────────────────────
+
+void WeChatSidebar::setLeafData(const QString& accId,
+                                const QVariantList& sessions,
+                                const QVariantList& contacts) {
+    m_sessionsByAcc.insert(accId, sessions);
+    m_contactsByAcc.insert(accId, contacts);
+    refreshGroupLabelsForAccount(accId);
+}
+
+void WeChatSidebar::appendContactsBatch(const QString& accId,
+                                        const QVariantList& batch) {
+    if (batch.isEmpty()) return;
+    auto& cache = m_contactsByAcc[accId];
+    QSet<QString> existing;
+    existing.reserve(cache.size());
+    for (const auto& v : cache) {
+        const QString wxid = v.toMap()["userName"].toString();
+        if (!wxid.isEmpty()) existing.insert(wxid);
+    }
+    for (const auto& v : batch) {
+        const auto m = v.toMap();
+        const QString wxid = m["userName"].toString();
+        if (wxid.isEmpty() || existing.contains(wxid)) continue;
+        cache.append(m);
+        existing.insert(wxid);
+    }
+    scheduleRefresh(accId);
+}
+
+void WeChatSidebar::appendSessionsBatch(const QString& accId,
+                                        const QVariantList& batch) {
+    if (batch.isEmpty()) return;
+    auto& cache = m_sessionsByAcc[accId];
+    QSet<QString> existing;
+    existing.reserve(cache.size());
+    for (const auto& v : cache) {
+        const QString t = v.toMap()["talker"].toString();
+        if (!t.isEmpty()) existing.insert(t);
+    }
+    for (const auto& v : batch) {
+        const auto m = v.toMap();
+        const QString t = m["talker"].toString();
+        if (t.isEmpty() || existing.contains(t)) continue;
+        cache.append(m);
+        existing.insert(t);
+    }
+    scheduleRefresh(accId);
+}
+
+void WeChatSidebar::scheduleRefresh(const QString& accId, int delayMs) {
+    auto* t = m_rebuildTimerByAcc.value(accId, nullptr);
+    if (!t) {
+        t = new QTimer(this);
+        t->setSingleShot(true);
+        t->setInterval(delayMs);
+        connect(t, &QTimer::timeout, this, [this, accId]() {
+            refreshGroupLabelsForAccount(accId);
+        });
+        m_rebuildTimerByAcc.insert(accId, t);
+    } else {
+        t->setInterval(delayMs);
+    }
+    t->start();
+}
+
+void WeChatSidebar::clearLeafData(const QString& accId) {
+    m_sessionsByAcc.remove(accId);
+    m_contactsByAcc.remove(accId);
+    m_contactsLabelFp.remove(accId);
+    m_sessionsLabelFp.remove(accId);
+    refreshGroupLabelsForAccount(accId);
+}
+
+void WeChatSidebar::refreshGroupLabelsForAccount(const QString& accId) {
+    auto* accItem = findAccountItem(accId);
+    if (!accItem) return;
+    if (accItem->childCount() < 2) return;
+    auto* contactGroup = accItem->child(0);
+    auto* chatGroup    = accItem->child(1);
+
+    // 联系人分组
+    const auto contacts = m_contactsByAcc.value(accId);
+    const QString cFp = labelFingerprint(contacts);
+    if (cFp != m_contactsLabelFp.value(accId)) {
+        m_contactsLabelFp.insert(accId, cFp);
+        m_tree->blockSignals(true);
+        contactGroup->setText(0, buildContactLabel(contacts));
+        m_tree->blockSignals(false);
+    }
+
+    // 聊天分组
+    const auto sessions = m_sessionsByAcc.value(accId);
+    const QString sFp = labelFingerprint(sessions);
+    if (sFp != m_sessionsLabelFp.value(accId)) {
+        m_sessionsLabelFp.insert(accId, sFp);
+        m_tree->blockSignals(true);
+        chatGroup->setText(0, buildChatLabel(sessions));
+        m_tree->blockSignals(false);
+    }
+}
+
 void WeChatSidebar::onTreeItemClicked(QTreeWidgetItem* item, int col) {
     if (!item) return;
     const NodeType t = NodeType(item->data(col, NodeTypeRole).toInt());
     const QString accId = item->data(col, Qt::UserRole).toString();
 
     switch (t) {
-    case NodeChatFolder:
-        emit chatFolderClicked(accId);
+    case NodeChatGroup:
+        if (!accId.isEmpty()) emit chatGroupClicked(accId);
         break;
-    case NodeContactFolder:
-        emit contactFolderClicked(accId);
+    case NodeContactGroup:
+        if (!accId.isEmpty()) emit contactGroupClicked(accId);
         break;
+    case NodeAccountRoot:
     default:
-        // 账号根节点：什么都不做（选中即生效）
         break;
     }
 }

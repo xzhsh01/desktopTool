@@ -67,6 +67,14 @@ signals:
     void syncAccountDataReady(const QString& accId,
                               const QVariantList& sessions,
                               const QVariantList& contacts);
+
+    // 流式增量批次：每 N 条同步一次，UI 直接追加（无需重建列表）
+    // batchIndex 从 0 开始递增，便于 UI 去重
+    void syncContactsPartial(const QString& accId,
+                             const QVariantList& batch, int batchIndex);
+    void syncSessionsPartial(const QString& accId,
+                             const QVariantList& batch, int batchIndex);
+
     void syncMessagesReady(const QString& accId, const QString& talker,
                            const QString& title,
                            const QList<QVariantMap>& messages);
@@ -97,7 +105,12 @@ private:
     bool needsResync(const QString& accId, const QString& sourcePath,
                      qint64 size, qint64 mtime);
 
+    // 触发某账号的"延迟去重同步"：500ms 内重复调用只调度一次
+    void scheduleSync(const QString& accId);
+
     QFileSystemWatcher* m_watcher = nullptr;
     QHash<QString, QStringList> m_watchedDirs;  // accId -> watched paths
     QSet<QString> m_syncing;                   // 防重入：当前正在同步的账号
+    QSet<QString> m_pending;                   // 已排队 500ms 内的 syncAccount
+    QHash<QString, qint64> m_lastSyncAt;       // accId -> 上次 syncAccount 结束时间 (cooldown)
 };

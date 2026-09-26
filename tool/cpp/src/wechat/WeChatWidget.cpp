@@ -155,11 +155,11 @@ void WeChatWidget::buildUi() {
     connect(m_sidebar, &WeChatSidebar::refreshRequested,
             this, &WeChatWidget::onRefreshCurrent);
 
-    // 文件夹点击 → 中栏切页 + 触发数据加载
-    connect(m_sidebar, &WeChatSidebar::chatFolderClicked,
-            this, &WeChatWidget::onSidebarChatFolderClicked);
-    connect(m_sidebar, &WeChatSidebar::contactFolderClicked,
-            this, &WeChatWidget::onSidebarContactFolderClicked);
+    // 左树分组点击 → 中栏切到聊天 / 联系人列表（不再直接打开详情）
+    connect(m_sidebar, &WeChatSidebar::chatGroupClicked,
+            this, &WeChatWidget::onSidebarChatGroupClicked);
+    connect(m_sidebar, &WeChatSidebar::contactGroupClicked,
+            this, &WeChatWidget::onSidebarContactGroupClicked);
 
     // 中栏项点击 → 打开聊天 / 联系人详情
     connect(m_listPanel, &WeChatListPanel::chatItemClicked,
@@ -197,6 +197,11 @@ void WeChatWidget::startSyncWorker() {
             this, &WeChatWidget::onSyncProgress);
     connect(m_syncWorker, &WeChatSyncWorker::syncAccountDataReady,
             this, &WeChatWidget::onSyncAccountDataReady);
+    // 流式增量：每 N 条同步一次，UI 直接追加（无需重建）
+    connect(m_syncWorker, &WeChatSyncWorker::syncContactsPartial,
+            this, &WeChatWidget::onSyncContactsPartial);
+    connect(m_syncWorker, &WeChatSyncWorker::syncSessionsPartial,
+            this, &WeChatWidget::onSyncSessionsPartial);
     connect(m_syncWorker, &WeChatSyncWorker::syncMessagesReady,
             this, &WeChatWidget::onSyncMessagesReady);
     connect(m_syncWorker, &WeChatSyncWorker::syncFinished,
@@ -245,7 +250,10 @@ void WeChatWidget::onAccountsChanged() {
         !WeChatAccountManager::instance().getById(m_currentAccountId)) {
         if (!accs.isEmpty()) {
             m_currentAccountId = accs.first().id;
-            if (m_listPanel) m_listPanel->setCurrentAccId(m_currentAccountId);
+            if (m_listPanel) {
+                m_listPanel->setCurrentAccId(m_currentAccountId);
+                m_listPanel->showChatList();   // 新账号：默认进聊天页
+            }
             // 立刻从缓存呈现（如果有）
             presentFromCache(m_currentAccountId);
             // 同步 worker
@@ -273,7 +281,16 @@ void WeChatWidget::selectAccount(const QString& accountId) {
     m_currentAccountId = accountId;
     updateEmptyState();
     if (m_sidebar) m_sidebar->selectAccount(accountId);
-    if (m_listPanel) m_listPanel->setCurrentAccId(accountId);
+    if (m_listPanel) {
+        m_listPanel->setCurrentAccId(accountId);
+        m_listPanel->showChatList();   // 外部入口：默认进聊天页
+    }
+    if (m_syncWorker) {
+        QMetaObject::invokeMethod(m_syncWorker, "watchAccount",
+                                  Qt::QueuedConnection,
+                                  Q_ARG(QString, accountId));
+    }
+    presentFromCache(accountId);
 }
 
 // ── 侧边栏操作 ─────────────────────────────────────────────────────────────
@@ -307,6 +324,7 @@ void WeChatWidget::onRefreshCurrent() {
     m_sessionsCache.remove(m_currentAccountId);
     m_contactsCache.remove(m_currentAccountId);
     if (m_listPanel) m_listPanel->clearData(m_currentAccountId);
+    if (m_sidebar)   m_sidebar->clearLeafData(m_currentAccountId);
 
     if (m_syncWorker) {
         QMetaObject::invokeMethod(m_syncWorker, "syncAccount",
@@ -316,50 +334,29 @@ void WeChatWidget::onRefreshCurrent() {
     setStatusText("已请求刷新当前账号…");
 }
 
-// ── sidebar 文件夹点击 → 中栏切页 + 触发加载 ──
+// ── sidebar 分组点击 → 中栏切到对应列表（不直接打开详情） ──
 
-void WeChatWidget::onSidebarChatFolderClicked(const QString& accId) {
+void WeChatWidget::onSidebarChatGroupClicked(const QString& accId) {
     if (accId.isEmpty()) return;
-
-    // 防抖：100ms 内重复点击同一 accId 同一文件夹 → 短路（防 sidebar 连点/抖动）
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const bool sameAccSameFolder = (accId == m_lastSidebarAccId)
-        && (now - m_lastSidebarClickMs < 100);
-    if (sameAccSameFolder && m_listPanel->isShowingChatList()) {
-        // 已在该账号聊天页，跳过 watch + presentFromCache（省 SQLite + queued signal）
-        return;
-    }
-    m_lastSidebarAccId = accId;
-    m_lastSidebarClickMs = now;
-
     m_currentAccountId = accId;
+    // 1) 切中栏到聊天页
     if (m_listPanel) {
         m_listPanel->setCurrentAccId(accId);
         m_listPanel->showChatList();
     }
-    // 启动 watcher（首次点击某账号时也启动）
+    // 2) 启动 watcher（首次点击某账号时也启动，保持在线同步）
     if (m_syncWorker) {
         QMetaObject::invokeMethod(m_syncWorker, "watchAccount",
                                   Qt::QueuedConnection,
                                   Q_ARG(QString, accId));
     }
-    // 优先从 CacheDb 读取（O(1)）；后台持续同步保证数据最新
+    // 3) 用缓存填充（fingerprint 短路，未变则不重建）
     presentFromCache(accId);
+    // 4) 不再自动选中第一项 — 用户明确点击列表项才打开详情
 }
 
-void WeChatWidget::onSidebarContactFolderClicked(const QString& accId) {
+void WeChatWidget::onSidebarContactGroupClicked(const QString& accId) {
     if (accId.isEmpty()) return;
-
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const bool sameAccSameFolder = (accId == m_lastSidebarAccId)
-        && (now - m_lastSidebarClickMs < 100);
-    if (sameAccSameFolder && !m_listPanel->isShowingChatList()) {
-        // 已在该账号联系人页，跳过 watch + presentFromCache
-        return;
-    }
-    m_lastSidebarAccId = accId;
-    m_lastSidebarClickMs = now;
-
     m_currentAccountId = accId;
     if (m_listPanel) {
         m_listPanel->setCurrentAccId(accId);
@@ -379,29 +376,18 @@ void WeChatWidget::onListOpenChat(const QString& accId, const QString& talker) {
     if (talker.isEmpty() || accId.isEmpty()) return;
     m_currentAccountId = accId;
 
-    // 计算 title（从 contacts 缓存找 display；群聊补成员数）
-    QString title = talker;
-    const auto& contacts = m_contactsCache.value(accId);
-    for (const auto& v : contacts) {
-        const auto c = v.toMap();
-        if (c["userName"].toString() == talker) {
-            title = c["display"].toString();
-            break;
-        }
-    }
-    if (title == talker && talker.endsWith(QLatin1String("@chatroom"))) {
-        const auto members = CacheDb::loadChatRoomMembers(accId, talker);
-        title += QString("（%1）").arg(members.size());
-    }
+    // O(1) 查找 display（避免 O(N) 遍历 contacts 列表）
+    QString title = m_contactDisplayIdx.value(accId).value(talker, talker);
+    const bool isRoom = talker.endsWith(QLatin1String("@chatroom"));
+    const bool needMemberCount = (title == talker) && isRoom;
 
     // 短路1：detailPanel 已经渲染过这个 talker 的气泡 → 仅切到 chatPage + 更新 title
-    // 不调 loadMessages（避免和 watcher 抢 SQLite 锁），信任 detailPanel 内部短路
     if (m_currentTalker == talker && m_lastRenderedMsgCount > 0) {
         m_detailPanel->showChatHeader(title);
         return;
     }
 
-    // 短路2：300ms 时间窗口（防 watcher 持续写入 + 连点导致反复重渲染）
+    // 短路2：300ms 时间窗口（防连点 / watcher 持续写入导致反复重渲染）
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (m_lastOpenChatMs > 0 && now - m_lastOpenChatMs < 300) {
         m_detailPanel->showChatHeader(title);
@@ -409,26 +395,37 @@ void WeChatWidget::onListOpenChat(const QString& accId, const QString& talker) {
     }
     m_lastOpenChatMs = now;
 
-    // 直接从 CacheDb 读取消息（O(1)）；同步由后台 worker 异步进行
+    // 1) 先切到聊天页并显示标题（立即响应点击，不阻塞）
+    m_detailPanel->showChatHeader(title);
+    m_currentTalker = talker;
+
+    // 2) 立即显示缓存消息（O(1) 内存查询，CacheDb 已 WAL+索引，几百微秒级）
     const auto msgs = CacheDb::loadMessages(accId, talker, 0);
     if (msgs.isEmpty()) {
-        // 缓存空：触发后台补全（可能是首次打开 / 未同步过的会话）
+        // 缓存空：触发后台补全（首次打开 / 未同步过的会话）
         if (m_syncWorker) {
             QMetaObject::invokeMethod(m_syncWorker, "syncAccount",
                                       Qt::QueuedConnection,
                                       Q_ARG(QString, accId));
         }
         m_detailPanel->showEmpty("该会话尚未同步到本地，等待后台首次同步完成…");
-        m_currentTalker = talker;
         m_lastRenderedMsgCount = 0;
-        return;
+    } else {
+        m_detailPanel->renderMessages(msgs, talker);
+        m_lastRenderedMsgCount = msgs.size();
+        setStatusText(QString("%1 · %2 条消息").arg(title).arg(msgs.size()));
     }
 
-    m_detailPanel->showChatHeader(title);
-    m_detailPanel->renderMessages(msgs, talker);
-    // m_currentTalker 由 renderMessages 内部维护（保证一致）
-    m_lastRenderedMsgCount = msgs.size();
-    setStatusText(QString("%1 · %2 条消息").arg(title).arg(msgs.size()));
+    // 3) 群成员数：异步加载，不阻塞点击响应（memberCount 拼到标题后）
+    if (needMemberCount) {
+        QMetaObject::invokeMethod(this, [this, accId, talker, title]() {
+            const auto members = CacheDb::loadChatRoomMembers(accId, talker);
+            // 用户已经切走 → 丢弃
+            if (m_currentAccountId != accId || m_currentTalker != talker) return;
+            const QString t2 = QString("%1（%2）").arg(title).arg(members.size());
+            m_detailPanel->showChatHeader(t2);
+        }, Qt::QueuedConnection);
+    }
 }
 
 void WeChatWidget::onListShowContact(const QString& accId, const QString& wxid) {
@@ -499,14 +496,88 @@ void WeChatWidget::onSyncProgress(const QString& accId, const QString& stage,
 }
 
 void WeChatWidget::onSyncAccountDataReady(const QString& accId,
-                                           const QVariantList& sessions,
-                                           const QVariantList& contacts) {
+                                          const QVariantList& sessions,
+                                          const QVariantList& contacts) {
+    // 更新 widget 缓存（始终保持与权威数据一致）
     m_sessionsCache.insert(accId, sessions);
     m_contactsCache.insert(accId, contacts);
-    if (m_listPanel) {
-        m_listPanel->setSessions(accId, sessions);
-        m_listPanel->setContacts(accId, contacts);
+    // 构建 wxid → display 的快速索引（O(1) 查找）
+    QHash<QString, QString> idx;
+    idx.reserve(contacts.size());
+    for (const auto& v : contacts) {
+        const auto m = v.toMap();
+        const QString wxid = m["userName"].toString();
+        if (!wxid.isEmpty())
+            idx.insert(wxid, m["display"].toString());
     }
+    m_contactDisplayIdx.insert(accId, idx);
+    if (!m_listPanel) return;
+
+    // 关键优化：partial 期间已经全部追加过 → 跳过 setContacts 全量重建
+    // （避免流式追加后再触发一次 list 重建，浪费 CPU + 引发 UI 闪烁）
+    const bool sessionsMatch = m_listPanel->sessionsCount(accId) == sessions.size();
+    const bool contactsMatch = m_listPanel->contactsCount(accId) == contacts.size();
+    if (sessionsMatch && contactsMatch) {
+        // partial 已完成且数量一致 → 跳过 list 重建；但仍要把权威数据喂给左树
+        // （左树走的是 widget 自己的 cache，与 listPanel cache 独立）
+        if (m_sidebar) m_sidebar->setLeafData(accId, sessions, contacts);
+        return;
+    }
+    // 数量不一致（partial 数据丢失 / 顺序错乱等极端情况）→ 全量重建兜底
+    m_listPanel->setSessions(accId, sessions);
+    m_listPanel->setContacts(accId, contacts);
+    if (m_sidebar) m_sidebar->setLeafData(accId, sessions, contacts);
+}
+
+// ── 流式增量回调（避免列表全量重建） ──
+
+void WeChatWidget::onSyncContactsPartial(const QString& accId,
+                                         const QVariantList& batch,
+                                         int batchIndex) {
+    Q_UNUSED(batchIndex);
+    if (batch.isEmpty()) return;
+    // 增量追加到 m_contactsCache + 构建 display 索引（仅对新增的）
+    auto& dispIdx = m_contactDisplayIdx[accId];
+    auto& cache   = m_contactsCache[accId];
+    QSet<QString> existing;
+    existing.reserve(cache.size());
+    for (const auto& v : cache) {
+        const QString wxid = v.toMap()["userName"].toString();
+        if (!wxid.isEmpty()) existing.insert(wxid);
+    }
+    for (const auto& v : batch) {
+        const auto m = v.toMap();
+        const QString wxid = m["userName"].toString();
+        if (wxid.isEmpty() || existing.contains(wxid)) continue;
+        cache.append(m);
+        dispIdx.insert(wxid, m["display"].toString());
+        existing.insert(wxid);
+    }
+    if (m_listPanel) m_listPanel->appendContactsBatch(accId, batch);
+    if (m_sidebar)   m_sidebar->appendContactsBatch(accId, batch);  // 左树流式
+}
+
+void WeChatWidget::onSyncSessionsPartial(const QString& accId,
+                                         const QVariantList& batch,
+                                         int batchIndex) {
+    Q_UNUSED(batchIndex);
+    if (batch.isEmpty()) return;
+    auto& cache = m_sessionsCache[accId];
+    QSet<QString> existing;
+    existing.reserve(cache.size());
+    for (const auto& v : cache) {
+        const QString t = v.toMap()["talker"].toString();
+        if (!t.isEmpty()) existing.insert(t);
+    }
+    for (const auto& v : batch) {
+        const auto m = v.toMap();
+        const QString t = m["talker"].toString();
+        if (t.isEmpty() || existing.contains(t)) continue;
+        cache.append(m);
+        existing.insert(t);
+    }
+    if (m_listPanel) m_listPanel->appendSessionsBatch(accId, batch);
+    if (m_sidebar)   m_sidebar->appendSessionsBatch(accId, batch);  // 左树流式
 }
 
 void WeChatWidget::onSyncMessagesReady(const QString& accId, const QString& talker,
@@ -560,10 +631,22 @@ void WeChatWidget::presentFromCache(const QString& accId) {
     const auto contacts = CacheDb::loadContacts(accId);
     m_sessionsCache.insert(accId, sessions);
     m_contactsCache.insert(accId, contacts);
+    // 构建 wxid → display 快速索引（O(1) 查找）
+    QHash<QString, QString> idx;
+    idx.reserve(contacts.size());
+    for (const auto& v : contacts) {
+        const auto m = v.toMap();
+        const QString wxid = m["userName"].toString();
+        if (!wxid.isEmpty())
+            idx.insert(wxid, m["display"].toString());
+    }
+    m_contactDisplayIdx.insert(accId, idx);
     if (m_listPanel) {
         m_listPanel->setSessions(accId, sessions);   // 内部指纹短路：相同数据不重建 list
         m_listPanel->setContacts(accId, contacts);
     }
+    // 同步灌入左树叶子（fingerprint 短路：相同数据不重建叶子）
+    if (m_sidebar) m_sidebar->setLeafData(accId, sessions, contacts);
     if (!sessions.isEmpty() || !contacts.isEmpty()) {
         setStatusText(QString("%1 · 缓存命中：%2 会话 / %3 联系人")
                           .arg(accId)

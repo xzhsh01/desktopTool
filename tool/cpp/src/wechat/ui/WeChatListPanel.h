@@ -33,6 +33,17 @@ public:
     // 数据注入（按账号缓存；命中时只刷新当前可见那一页）
     void setSessions(const QString& accId, const QVariantList& list);
     void setContacts(const QString& accId, const QVariantList& list);
+
+    // 流式增量追加：worker 每 N 条回调一次，本接口仅插入新 wxid/talker
+    // 不重建列表，不调用 fingerprint（开销 O(N)）
+    // 返回实际插入条数
+    int appendContactsBatch(const QString& accId, const QVariantList& batch);
+    int appendSessionsBatch(const QString& accId, const QVariantList& batch);
+
+    // 当前缓存数量（用于 widget 决策是否跳过全量 setSessions）
+    int contactsCount(const QString& accId) const { return m_contactsCache.value(accId).size(); }
+    int sessionsCount(const QString& accId) const { return m_sessionsCache.value(accId).size(); }
+
     void clearData(const QString& accId);
 
     // 切换显示哪一页
@@ -48,6 +59,11 @@ public:
 
     // 当前过滤文本（保留供外部使用）
     QString searchText() const;
+
+    // 选中列表中的某一项（用于从 sidebar 叶子点击反向同步列表高亮）
+    // 若对应项不在当前页（搜索过滤掉了）则切换搜索框为该关键词
+    bool selectChatByTalker(const QString& talker);
+    bool selectContactByWxid(const QString& wxid);
 
 signals:
     // 列表项被点击：协调者据此打开聊天 / 联系人详情

@@ -62,4 +62,6 @@ private:
     QString m_currentTalker;                                // 用于渲染头像/群名
     QString m_currentShownContact;                          // showContact 短路用（按 wxid）
     int     m_renderedMsgCount = 0;                         // renderMessages 内部短路用
+    // 分块渲染：标记当前正在追加的 talker，切换后丢弃旧块
+    QString m_chunkAppendTalker;
 };

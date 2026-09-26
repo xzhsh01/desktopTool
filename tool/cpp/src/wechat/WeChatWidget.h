@@ -64,11 +64,11 @@ private slots:
     // 监听账号变化
     void onAccountsChanged();
 
-    // sidebar 文件夹点击 → 中栏切换 + 触发加载
-    void onSidebarChatFolderClicked(const QString& accId);
-    void onSidebarContactFolderClicked(const QString& accId);
+    // sidebar 分组点击 → 中栏切到对应列表 + 启动 watcher
+    void onSidebarChatGroupClicked(const QString& accId);
+    void onSidebarContactGroupClicked(const QString& accId);
 
-    // listPanel 项点击 → 打开聊天 / 联系人详情
+    // listPanel 项点击 → 打开聊天 / 联系人详情（搜索/筛选入口）
     void onListOpenChat(const QString& accId, const QString& talker);
     void onListShowContact(const QString& accId, const QString& wxid);
 
@@ -85,6 +85,11 @@ private slots:
     void onSyncAccountDataReady(const QString& accId,
                                 const QVariantList& sessions,
                                 const QVariantList& contacts);
+    // 流式增量批次 → listPanel 立即追加（无重建）
+    void onSyncContactsPartial(const QString& accId,
+                               const QVariantList& batch, int batchIndex);
+    void onSyncSessionsPartial(const QString& accId,
+                               const QVariantList& batch, int batchIndex);
     void onSyncMessagesReady(const QString& accId, const QString& talker,
                              const QString& title,
                              const QList<QVariantMap>& messages);
@@ -133,6 +138,8 @@ private:
     // ── UI 缓存（已渲染的元数据，避免重复注入 listPanel） ──
     QHash<QString, QVariantList> m_sessionsCache;     // accId -> sessions
     QHash<QString, QVariantList> m_contactsCache;     // accId -> contacts
+    // 联系人 wxid → display 的快速索引（O(1) 查找，避免 onListOpenChat 遍历）
+    QHash<QString, QHash<QString, QString>> m_contactDisplayIdx; // accId -> (wxid -> display)
     QHash<QString, qint64>       m_lastSyncMs;        // accId -> 上次完成时间戳
 
     QString m_currentAccountId;
@@ -140,10 +147,6 @@ private:
     QString m_currentContact;                              // 当前详情页联系人 wxid（onListShowContact 短路用）
     int     m_lastRenderedMsgCount = 0;     // 当前已渲染气泡数（onListOpenChat 短路用）
     qint64  m_lastOpenChatMs = 0;           // 上次打开聊天时间戳（时间窗口短路用）
-
-    // sidebar 点击防抖（防连点/抖动触发 watcher + 重读 CacheDb）
-    QString m_lastSidebarAccId;
-    qint64  m_lastSidebarClickMs = 0;
 
     // ── 状态栏节流 ──
     QTimer* m_statusTickTimer = nullptr;

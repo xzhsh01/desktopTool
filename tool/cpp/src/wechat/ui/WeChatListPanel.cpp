@@ -1,6 +1,7 @@
 #include "wechat/ui/WeChatListPanel.h"
 #include "app/Theme.h"
 
+#include <QDateTime>
 #include <QFont>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -38,10 +39,41 @@ static QPixmap roundAvatar(const QString& text, const QString& key, int size) {
     return pm;
 }
 
-// 单行 chat 列表项 widget：头像 + 名称/预览 两行
+// 相对时间格式化（参考邮件列表）：今天→HH:mm，昨天→"昨天"，跨年→"yyyy-MM-dd"
+static QString formatRelativeTime(qint64 ts) {
+    if (ts <= 0) return QString();
+    const QDateTime dt = QDateTime::fromSecsSinceEpoch(ts);
+    const QDateTime now = QDateTime::currentDateTime();
+    const QDate dToday = now.date();
+    const QDate dMsg   = dt.date();
+
+    if (dMsg == dToday)        return dt.toString("HH:mm");
+    if (dMsg == dToday.addDays(-1))
+        return QStringLiteral("昨天");
+    if (dMsg.year() == dToday.year())
+        return dt.toString("MM-dd");
+    return dt.toString("yyyy-MM-dd");
+}
+
+// 红色圆角未读徽标 widget：左侧数字 + 圆形背景
+static QLabel* makeUnreadBadge(int n) {
+    if (n <= 0) return nullptr;
+    auto* lbl = new QLabel;
+    lbl->setText(n > 99 ? QStringLiteral("99+") : QString::number(n));
+    lbl->setFixedSize(22, 16);
+    lbl->setAlignment(Qt::AlignCenter);
+    lbl->setStyleSheet(
+        "background-color:#e53935;color:#ffffff;border-radius:8px;"
+        "font-size:10px;font-weight:bold;");
+    return lbl;
+}
+
+// 单行 chat 列表项 widget：头像 + 名称/预览 两行 + 右侧时间/未读
 static QWidget* makeChatRow(const QString& title,
                             const QString& preview,
-                            const QString& key) {
+                            const QString& key,
+                            qint64 ts,
+                            int unread) {
     auto* row = new QWidget;
     row->setStyleSheet("background:transparent;");
     auto* lay = new QHBoxLayout(row);
@@ -53,16 +85,25 @@ static QWidget* makeChatRow(const QString& title,
     avatar->setFixedSize(36, 36);
     lay->addWidget(avatar, 0, Qt::AlignVCenter);
 
+    // 中央：名称 + 预览（两行）
     auto* col = new QVBoxLayout;
     col->setSpacing(2);
+
+    auto* nameRow = new QHBoxLayout;
+    nameRow->setSpacing(6);
     auto* name = new QLabel(title);
-    name->setStyleSheet(QString("color:%1; font-size:13px; font-weight:600;")
-                            .arg(Theme::kTextBright));
-    col->addWidget(name);
+    // 未读 > 0 → 强调（高亮 + 加粗），否则柔和灰
+    const bool hasUnread = unread > 0;
+    name->setStyleSheet(QString("color:%1; font-size:13px; %2")
+                            .arg(hasUnread ? Theme::kAccent : Theme::kTextBright,
+                                 hasUnread ? "font-weight:700;" : "font-weight:600;"));
+    nameRow->addWidget(name, 1);
+    col->addLayout(nameRow);
 
     if (!preview.isEmpty()) {
         auto* pv = new QLabel(preview);
-        pv->setStyleSheet(QString("color:%1; font-size:11px;").arg(Theme::kMuted));
+        const QString pvColor = hasUnread ? Theme::kText : Theme::kMuted;
+        pv->setStyleSheet(QString("color:%1; font-size:11px;").arg(pvColor));
         pv->setMaximumWidth(220);
         QString cut = preview;
         if (cut.size() > 60) cut = cut.left(60) + "…";
@@ -70,13 +111,44 @@ static QWidget* makeChatRow(const QString& title,
         col->addWidget(pv);
     }
     lay->addLayout(col, 1);
+
+    // 右侧：时间（上）+ 未读徽标（下），垂直右对齐
+    auto* right = new QVBoxLayout;
+    right->setSpacing(4);
+    right->setContentsMargins(0, 0, 0, 0);
+
+    const QString timeText = formatRelativeTime(ts);
+    if (!timeText.isEmpty()) {
+        auto* timeLbl = new QLabel(timeText);
+        timeLbl->setStyleSheet(QString("color:%1; font-size:10px;")
+                                   .arg(hasUnread ? Theme::kAccent : Theme::kMuted));
+        timeLbl->setAlignment(Qt::AlignRight);
+        right->addWidget(timeLbl, 0, Qt::AlignRight | Qt::AlignTop);
+    }
+
+    if (auto* badge = makeUnreadBadge(unread)) {
+        auto* badgeWrap = new QWidget;
+        badgeWrap->setFixedSize(22, 16);
+        auto* bl = new QHBoxLayout(badgeWrap);
+        bl->setContentsMargins(0, 0, 0, 0);
+        bl->addWidget(badge, 0, Qt::AlignRight | Qt::AlignVCenter);
+        right->addWidget(badgeWrap, 0, Qt::AlignRight | Qt::AlignTop);
+    } else {
+        // 占位空白（保持行高度一致）
+        auto* spacer = new QWidget;
+        spacer->setFixedSize(1, 16);
+        right->addWidget(spacer, 0, Qt::AlignRight | Qt::AlignTop);
+    }
+    lay->addLayout(right, 0);
+
     return row;
 }
 
-// 单行 contact 列表项 widget：头像 + 名称 + 群聊 tag
+// 单行 contact 列表项 widget：头像 + 名称 + 群聊 tag + 可选时间徽标
 static QWidget* makeContactRow(const QString& display,
                                const QString& key,
-                               bool isRoom) {
+                               bool isRoom,
+                               qint64 updateTime = 0) {
     auto* row = new QWidget;
     row->setStyleSheet("background:transparent;");
     auto* lay = new QHBoxLayout(row);
@@ -91,6 +163,14 @@ static QWidget* makeContactRow(const QString& display,
     auto* name = new QLabel(display);
     name->setStyleSheet(QString("color:%1; font-size:13px;").arg(Theme::kText));
     lay->addWidget(name, 1, Qt::AlignVCenter);
+
+    // 时间徽标：联系人最近更新时间（若有）
+    if (updateTime > 0) {
+        auto* timeLbl = new QLabel(formatRelativeTime(updateTime));
+        timeLbl->setStyleSheet(QString("color:%1; font-size:10px;")
+                                   .arg(Theme::kFaint));
+        lay->addWidget(timeLbl, 0, Qt::AlignVCenter);
+    }
 
     if (isRoom) {
         auto* tag = new QLabel("群聊");
@@ -157,12 +237,17 @@ void WeChatListPanel::buildUi() {
 
     const QString listStyle = QString(
         "QListWidget{background:%1;border:none;outline:0;color:%2;}"
-        "QListWidget::item{height:60px;border:none;}"
+        "QListWidget::item{height:64px;border:none;margin:0 4px;border-radius:6px;}"
         "QListWidget::item:hover{background:%3;}"
-        "QListWidget::item:selected{background:%4;color:%5;}"
-        "QListWidget::item:selected:!active{background:%4;}")
+        "QListWidget::item:pressed{background:%4;}"
+        "QListWidget::item:selected{background:%5;color:%6;font-weight:600;}"
+        "QListWidget::item:selected:!active{background:%5;}"
+        "QListWidget::item:selected:hover{background:%4;}")
         .arg(Theme::kBg, Theme::kText,
-             Theme::kSurface, Theme::kBorder, Theme::kAccent);
+             Theme::kSurface,           // hover
+             Theme::kBorder,            // pressed / selected:hover
+             Theme::kAccent,            // selected bg
+             Theme::kBg);               // selected fg
 
     m_chatList = new QListWidget;
     m_chatList->setStyleSheet(listStyle);
@@ -190,10 +275,19 @@ void WeChatListPanel::buildUi() {
 
 void WeChatListPanel::setSessions(const QString& accId, const QVariantList& list) {
     const QString fp = fingerprint(list);
-    if (m_sessionsCache.value(accId).size() == list.size() &&
-        m_sessionsFp.value(accId) == fp) {
-        // 数据未变：不重建（重复点击 / 后台空转同步都不会触发 list 重建）
+    const int prevSize = m_sessionsCache.value(accId).size();
+    const QString prevFp = m_sessionsFp.value(accId);
+    if (prevSize == list.size() && !prevFp.isEmpty() && prevFp == fp) {
+        // 数据完全一致：不重建（重复点击 / 后台空转同步都不会触发 list 重建）
         m_sessionsCache.insert(accId, list);   // 仍刷新引用以保持最新
+        return;
+    }
+    if (prevSize == list.size() && prevFp.isEmpty()) {
+        // partial 模式：fp 已清掉（appendBatch 已插入 UI），但 size 已匹配
+        // 信任 appendBatch 的结果，跳过全量 rebuild（避免闪烁）
+        m_sessionsCache.insert(accId, list);
+        m_sessionsFp.insert(accId, fp);
+        updateTitle();
         return;
     }
     m_sessionsCache.insert(accId, list);
@@ -206,9 +300,17 @@ void WeChatListPanel::setSessions(const QString& accId, const QVariantList& list
 
 void WeChatListPanel::setContacts(const QString& accId, const QVariantList& list) {
     const QString fp = fingerprint(list);
-    if (m_contactsCache.value(accId).size() == list.size() &&
-        m_contactsFp.value(accId) == fp) {
+    const int prevSize = m_contactsCache.value(accId).size();
+    const QString prevFp = m_contactsFp.value(accId);
+    if (prevSize == list.size() && !prevFp.isEmpty() && prevFp == fp) {
         m_contactsCache.insert(accId, list);
+        return;
+    }
+    if (prevSize == list.size() && prevFp.isEmpty()) {
+        // partial 模式：fp 已清掉，appendBatch 已插入 UI，信任并跳过
+        m_contactsCache.insert(accId, list);
+        m_contactsFp.insert(accId, fp);
+        updateTitle();
         return;
     }
     m_contactsCache.insert(accId, list);
@@ -217,6 +319,86 @@ void WeChatListPanel::setContacts(const QString& accId, const QVariantList& list
         rebuildContactList();
         updateTitle();
     }
+}
+
+// ── 流式追加（同步中每隔 N 条回调一次，仅插入新 wxid/talker，不重建） ──
+
+int WeChatListPanel::appendContactsBatch(const QString& accId,
+                                        const QVariantList& batch) {
+    if (batch.isEmpty()) return 0;
+    // 已有 wxid 集合（避免重复插入 / 触发 rebuild）
+    auto& cache = m_contactsCache[accId];
+    QSet<QString> existing;
+    existing.reserve(cache.size());
+    for (const auto& v : cache) {
+        const QString wxid = v.toMap()["userName"].toString();
+        if (!wxid.isEmpty()) existing.insert(wxid);
+    }
+    QVariantList appended;
+    appended.reserve(batch.size());
+    for (const auto& v : batch) {
+        const auto m = v.toMap();
+        const QString wxid = m["userName"].toString();
+        if (wxid.isEmpty() || existing.contains(wxid)) continue;
+        cache.append(m);
+        appended.append(m);
+        existing.insert(wxid);
+    }
+    if (appended.isEmpty()) return 0;
+    // 失效 fingerprint（避免 setContacts 后续全量 rebuild 时做 fingerprint 比对浪费时间）
+    m_contactsFp.remove(accId);
+    // 当前账号 + 联系人页可见 → 立即插入 UI（不重建）
+    if (accId == m_currentAccId && m_stack->currentIndex() == 1) {
+        const QString filter = searchText();
+        if (filter.isEmpty()) {
+            // 无过滤词：直接追加（无需 rebuild）
+            for (const auto& v : appended) {
+                m_contactList->addItem(makeContactItem(v.toMap()));
+            }
+            updateTitle();
+        } else {
+            // 有过滤词：cache 已更新，但 UI 不能盲加（可能不匹配）
+            // mark dirty 让下次 rebuildContactList 生效
+            m_contactListBuiltFp.clear();
+        }
+    }
+    return appended.size();
+}
+
+int WeChatListPanel::appendSessionsBatch(const QString& accId,
+                                        const QVariantList& batch) {
+    if (batch.isEmpty()) return 0;
+    auto& cache = m_sessionsCache[accId];
+    QSet<QString> existing;
+    existing.reserve(cache.size());
+    for (const auto& v : cache) {
+        const QString t = v.toMap()["talker"].toString();
+        if (!t.isEmpty()) existing.insert(t);
+    }
+    QVariantList appended;
+    appended.reserve(batch.size());
+    for (const auto& v : batch) {
+        const auto m = v.toMap();
+        const QString t = m["talker"].toString();
+        if (t.isEmpty() || existing.contains(t)) continue;
+        cache.append(m);
+        appended.append(m);
+        existing.insert(t);
+    }
+    if (appended.isEmpty()) return 0;
+    m_sessionsFp.remove(accId);
+    if (accId == m_currentAccId && m_stack->currentIndex() == 0) {
+        const QString filter = searchText();
+        if (filter.isEmpty()) {
+            for (const auto& v : appended) {
+                m_chatList->addItem(makeChatItem(v.toMap()));
+            }
+            updateTitle();
+        } else {
+            m_chatListBuiltFp.clear();
+        }
+    }
+    return appended.size();
 }
 
 // 计算列表指纹：数量 + 各条目关键字段拼接 → 整型 hash
@@ -245,6 +427,54 @@ void WeChatListPanel::clearData(const QString& accId) {
         m_contactList->clear();
         updateTitle();
     }
+}
+
+// ── 反向同步：sidebar 叶子点击时定位列表中的对应行 ──
+
+bool WeChatListPanel::selectChatByTalker(const QString& talker) {
+    if (talker.isEmpty() || !m_chatList) return false;
+    // 遍历当前可见列表（不重建！）
+    for (int i = 0; i < m_chatList->count(); ++i) {
+        auto* it = m_chatList->item(i);
+        if (it && it->data(Qt::UserRole).toString() == talker) {
+            m_chatList->setCurrentItem(it);
+            m_chatList->scrollToItem(it, QAbstractItemView::PositionAtCenter);
+            return true;
+        }
+    }
+    // 不在当前列表（可能过滤掉了）：清空过滤让该项出现
+    if (m_searchEdit) m_searchEdit->clear();
+    for (int i = 0; i < m_chatList->count(); ++i) {
+        auto* it = m_chatList->item(i);
+        if (it && it->data(Qt::UserRole).toString() == talker) {
+            m_chatList->setCurrentItem(it);
+            m_chatList->scrollToItem(it, QAbstractItemView::PositionAtCenter);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool WeChatListPanel::selectContactByWxid(const QString& wxid) {
+    if (wxid.isEmpty() || !m_contactList) return false;
+    for (int i = 0; i < m_contactList->count(); ++i) {
+        auto* it = m_contactList->item(i);
+        if (it && it->data(Qt::UserRole).toString() == wxid) {
+            m_contactList->setCurrentItem(it);
+            m_contactList->scrollToItem(it, QAbstractItemView::PositionAtCenter);
+            return true;
+        }
+    }
+    if (m_searchEdit) m_searchEdit->clear();
+    for (int i = 0; i < m_contactList->count(); ++i) {
+        auto* it = m_contactList->item(i);
+        if (it && it->data(Qt::UserRole).toString() == wxid) {
+            m_contactList->setCurrentItem(it);
+            m_contactList->scrollToItem(it, QAbstractItemView::PositionAtCenter);
+            return true;
+        }
+    }
+    return false;
 }
 
 void WeChatListPanel::showChatList() {
@@ -385,12 +615,14 @@ QListWidgetItem* WeChatListPanel::makeChatItem(const QVariantMap& s) {
     const QString talker = s["talker"].toString();
     const QString title  = s["title"].toString();
     const QString prev   = s["lastMsg"].toString();
+    const qint64  ts     = s["time"].toLongLong();
+    const int     unread = s["unread"].toInt();
     auto* it = new QListWidgetItem;
     it->setData(Qt::UserRole, talker);
     it->setData(Qt::UserRole + 1, title);
-    it->setSizeHint(QSize(0, 60));
+    it->setSizeHint(QSize(0, 64));
     m_chatList->addItem(it);
-    m_chatList->setItemWidget(it, makeChatRow(title, prev, talker));
+    m_chatList->setItemWidget(it, makeChatRow(title, prev, talker, ts, unread));
     return it;
 }
 
@@ -398,12 +630,13 @@ QListWidgetItem* WeChatListPanel::makeContactItem(const QVariantMap& c) {
     const QString wxid    = c["userName"].toString();
     const QString display = c["display"].toString();
     const bool    isRoom  = c["isRoom"].toBool();
+    const qint64  updTime = c["updateTime"].toLongLong();
     auto* it = new QListWidgetItem;
     it->setData(Qt::UserRole, wxid);
     it->setData(Qt::UserRole + 1, display);
-    it->setSizeHint(QSize(0, 48));
+    it->setSizeHint(QSize(0, 52));
     m_contactList->addItem(it);
-    m_contactList->setItemWidget(it, makeContactRow(display, wxid, isRoom));
+    m_contactList->setItemWidget(it, makeContactRow(display, wxid, isRoom, updTime));
     return it;
 }
 

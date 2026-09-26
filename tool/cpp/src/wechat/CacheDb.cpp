@@ -237,6 +237,16 @@ bool CacheDb::initialize(QString* errOut) {
             synced_at  INTEGER,
             PRIMARY KEY (acc_id, source_path)
         );
+
+        -- 内容指纹：worker 写入 sessions/contacts 后写入；
+        -- 下次同步前对比，未变则跳过 UI 信号（"没有新内容就不要刷新页面"）
+        CREATE TABLE IF NOT EXISTS sync_content_hash (
+            acc_id     TEXT,
+            kind       TEXT,    -- "sessions" / "contacts"
+            hash       TEXT,
+            synced_at  INTEGER,
+            PRIMARY KEY (acc_id, kind)
+        );
     )SQL";
 
     bool ok = execSql(db, ddl, errOut);
@@ -340,6 +350,7 @@ bool CacheDb::deleteAccount(const QString& accId) {
         "DELETE FROM messages WHERE acc_id=?1",
         "DELETE FROM chat_room_members WHERE acc_id=?1",
         "DELETE FROM sync_state WHERE acc_id=?1",
+        "DELETE FROM sync_content_hash WHERE acc_id=?1",
         "DELETE FROM accounts WHERE acc_id=?1",
     };
     for (const QString& sql : sqls) {
@@ -829,6 +840,59 @@ bool CacheDb::clearSyncState(const QString& accId) {
     if (ok) {
         sqlite3_bind_text(stmt, 1, accId.toUtf8().constData(), -1, SQLITE_TRANSIENT);
         sqlite3_step(stmt);
+    }
+    if (stmt) sqlite3_finalize(stmt);
+    // 同时清掉内容指纹，避免后续 sync 误判"未变"
+    if (sqlite3_prepare_v2(db, "DELETE FROM sync_content_hash WHERE acc_id=?1",
+                           -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, accId.toUtf8().constData(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(stmt);
+    }
+    if (stmt) sqlite3_finalize(stmt);
+    closeDb(db);
+    return ok;
+}
+
+// ── 内容指纹（信号层去重） ─────────────────────────────────────────
+
+QString CacheDb::getContentHash(const QString& accId, const QString& kind) {
+    QString out;
+    sqlite3* db = nullptr;
+    if (!openDb(&db, nullptr)) return out;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT hash FROM sync_content_hash "
+                                "WHERE acc_id=?1 AND kind=?2",
+                           -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, accId.toUtf8().constData(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, kind.toUtf8().constData(),  -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char* t = sqlite3_column_text(stmt, 0);
+            if (t) out = QString::fromUtf8((const char*)t);
+        }
+    }
+    if (stmt) sqlite3_finalize(stmt);
+    closeDb(db);
+    return out;
+}
+
+bool CacheDb::setContentHash(const QString& accId, const QString& kind,
+                              const QString& hash) {
+    QMutexLocker lock(&g_writeMutex);
+    sqlite3* db = nullptr;
+    if (!openDb(&db, nullptr)) return false;
+    const QString sql = R"SQL(
+        INSERT INTO sync_content_hash (acc_id, kind, hash, synced_at)
+        VALUES (?1, ?2, ?3, strftime('%s','now'))
+        ON CONFLICT(acc_id, kind) DO UPDATE SET
+            hash=excluded.hash, synced_at=excluded.synced_at
+    )SQL";
+    sqlite3_stmt* stmt = nullptr;
+    bool ok = (sqlite3_prepare_v2(db, sql.toUtf8().constData(), -1, &stmt, nullptr) == SQLITE_OK);
+    if (ok) {
+        sqlite3_bind_text(stmt, 1, accId.toUtf8().constData(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, kind.toUtf8().constData(),  -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, hash.toUtf8().constData(),   -1, SQLITE_TRANSIENT);
+        ok = (sqlite3_step(stmt) == SQLITE_DONE);
     }
     if (stmt) sqlite3_finalize(stmt);
     closeDb(db);

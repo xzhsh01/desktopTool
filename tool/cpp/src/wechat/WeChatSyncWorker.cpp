@@ -4,10 +4,12 @@
 #include "WeChatDb.h"
 #include "core/Logger.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QMap>
 #include <QTimer>
 
 #include "sqlite3.h"
@@ -21,6 +23,25 @@ WeChatSyncWorker::WeChatSyncWorker(QObject* parent) : QObject(parent) {
             this, &WeChatSyncWorker::onWatcherChanged);
 }
 
+namespace {
+// 计算列表整体指纹：每条目按 key 排序后拼接 → SHA1
+// （与 ListPanel::fingerprint 同算法，UI 层与之保持一致）
+QString listFingerprint(const QVariantList& list) {
+    if (list.isEmpty()) return QStringLiteral("0");
+    QCryptographicHash h(QCryptographicHash::Sha1);
+    for (const auto& v : list) {
+        const auto m = v.toMap();
+        QMap<QString, QVariant> sorted(m);
+        QString s;
+        for (auto it = sorted.constBegin(); it != sorted.constEnd(); ++it) {
+            s += it.key() + "=" + it.value().toString() + ";";
+        }
+        h.addData(s.toUtf8());
+    }
+    return QString::fromLatin1(h.result().toHex());
+}
+} // namespace
+
 // ── 公共槽 ───────────────────────────────────────────────────────────
 
 void WeChatSyncWorker::syncAccount(const QString& accId) {
@@ -31,6 +52,7 @@ void WeChatSyncWorker::syncAccount(const QString& accId) {
         return;
     }
     m_syncing.insert(accId);
+    m_pending.remove(accId);   // 已真正执行：清掉排队标记
 
     QElapsedTimer tm;
     tm.start();
@@ -38,6 +60,7 @@ void WeChatSyncWorker::syncAccount(const QString& accId) {
     auto* acc = WeChatAccountManager::instance().getById(accId);
     if (!acc) {
         m_syncing.remove(accId);
+        m_lastSyncAt.insert(accId, QDateTime::currentMSecsSinceEpoch());
         emit syncFailed(accId, "账号不存在");
         return;
     }
@@ -49,6 +72,7 @@ void WeChatSyncWorker::syncAccount(const QString& accId) {
     emit syncProgress(accId, "decrypt", 0, 0, "正在解密数据库…");
     if (!db.ensureDecrypted()) {
         m_syncing.remove(accId);
+        m_lastSyncAt.insert(accId, QDateTime::currentMSecsSinceEpoch());
         emit syncFailed(accId, db.lastError().isEmpty()
                                    ? "数据库解密失败" : db.lastError());
         return;
@@ -57,6 +81,7 @@ void WeChatSyncWorker::syncAccount(const QString& accId) {
     // ① 同步元数据（联系人 + 会话）
     if (!syncAccountMeta(accId)) {
         m_syncing.remove(accId);
+        m_lastSyncAt.insert(accId, QDateTime::currentMSecsSinceEpoch());
         emit syncFailed(accId, "同步联系人/会话失败");
         return;
     }
@@ -71,6 +96,8 @@ void WeChatSyncWorker::syncAccount(const QString& accId) {
     CacheDb::upsertAccount(acc->id, acc->name, acc->wxid, acc->dataDir, key);
 
     m_syncing.remove(accId);
+    // 记录同步完成时间，2 秒内不再响应 watcher（避免自触发环路）
+    m_lastSyncAt.insert(accId, QDateTime::currentMSecsSinceEpoch());
     emit syncFinished(accId, tm.elapsed());
 }
 
@@ -86,18 +113,31 @@ void WeChatSyncWorker::watchAccount(const QString& accId) {
     if (!acc) return;
 
     QStringList paths;
-    const QFileInfo dir(acc->dataDir);
-    if (dir.exists()) paths << dir.absoluteFilePath();
 
-    // 微信 3.x: Msg/MicroMsg.db, Msg/Multi/MSG*.db
-    QDir msgDir(acc->dataDir + "/Msg");
-    if (msgDir.exists()) {
-        paths << msgDir.absolutePath();
-        paths << msgDir.absoluteFilePath("Multi");
+    // 只监控具体 db 文件，不监控整个目录
+    // （避免 path.startsWith(p) 把同一文件变化匹配到多层目录）
+    auto addFileIfExists = [&](const QString& p) {
+        if (QFile::exists(p)) paths << p;
+    };
+
+    // 微信 3.x
+    addFileIfExists(acc->dataDir + "/Msg/MicroMsg.db");
+    // Msg/Multi/MSG*.db 全部加入
+    QDir multi3(acc->dataDir + "/Msg/Multi");
+    if (multi3.exists()) {
+        const auto msgs = multi3.entryList(QStringList() << "MSG*.db", QDir::Files);
+        for (const auto& name : msgs)
+            addFileIfExists(multi3.absoluteFilePath(name));
     }
-    // 微信 4.x: db_storage/
-    QDir dbDir(acc->dataDir + "/db_storage");
-    if (dbDir.exists()) paths << dbDir.absolutePath();
+    // 微信 4.x
+    addFileIfExists(acc->dataDir + "/db_storage/contact/contact.db");
+    addFileIfExists(acc->dataDir + "/db_storage/session/session.db");
+    QDir msgDir4(acc->dataDir + "/db_storage/message");
+    if (msgDir4.exists()) {
+        const auto msgs = msgDir4.entryList(QStringList() << "message_*.db", QDir::Files);
+        for (const auto& name : msgs)
+            addFileIfExists(msgDir4.absoluteFilePath(name));
+    }
 
     paths.removeAll(QString());
     paths.removeDuplicates();
@@ -106,7 +146,7 @@ void WeChatSyncWorker::watchAccount(const QString& accId) {
     m_watcher->addPaths(paths);
     m_watchedDirs.insert(accId, paths);
     Logger::instance().info(
-        QString("SyncWorker: 监控 %1 → %2").arg(accId, paths.join(", ")), "sync");
+        QString("SyncWorker: 监控 %1 → %2 个文件").arg(accId).arg(paths.size()), "sync");
 }
 
 void WeChatSyncWorker::unwatchAccount(const QString& accId) {
@@ -156,14 +196,12 @@ bool WeChatSyncWorker::syncAccountMeta(const QString& accId) {
     WeChatDb db(acc->id, acc->dataDir, key);
     if (!db.ensureDecrypted()) return false;
 
-    // ── 联系人 ──
+    // ── 联系人：先算出新内容 hash，与持久化 hash 对比 ──
     emit syncStarted(accId, "contacts");
     emit syncProgress(accId, "contacts", 0, 0, "正在读取联系人…");
     const auto contacts = db.loadContacts();
     QVariantList cl;
     cl.reserve(contacts.size());
-    int idx = 0;
-    const int total = contacts.size();
     for (const auto& c : contacts) {
         QVariantMap m;
         m["userName"]  = c.userName;
@@ -175,27 +213,17 @@ bool WeChatSyncWorker::syncAccountMeta(const QString& accId) {
         m["type"]      = c.type;
         m["verifyFlag"] = c.verifyFlag;
         cl.append(m);
-
-        // 流式输出：每 200 条报告一次
-        if (++idx % 200 == 0) {
-            emit syncProgress(accId, "contacts", idx, total,
-                              QString("%1 / %2").arg(idx).arg(total));
-        }
     }
-    if (!CacheDb::replaceContacts(accId, cl)) {
-        Logger::instance().warn("CacheDb::replaceContacts 失败", "sync");
-    }
-    emit syncProgress(accId, "contacts", total, total,
-                      QString("完成：%1 个联系人").arg(total));
+    const QString contactsNewFp = listFingerprint(cl);
+    const QString contactsOldFp = CacheDb::getContentHash(accId, "contacts");
+    const bool contactsChanged = (contactsNewFp != contactsOldFp);
 
-    // ── 会话 ──
+    // ── 会话：先算出新内容 hash ──
     emit syncStarted(accId, "sessions");
     emit syncProgress(accId, "sessions", 0, 0, "正在读取会话…");
     const auto sessions = db.loadSessions();
     QVariantList sl;
     sl.reserve(sessions.size());
-    idx = 0;
-    const int totalS = sessions.size();
     for (const auto& s : sessions) {
         QVariantMap m;
         m["talker"]  = s.talker;
@@ -205,19 +233,80 @@ bool WeChatSyncWorker::syncAccountMeta(const QString& accId) {
         m["unread"]  = s.unread;
         m["isRoom"]  = s.isChatRoom;
         sl.append(m);
+    }
+    const QString sessionsNewFp = listFingerprint(sl);
+    const QString sessionsOldFp = CacheDb::getContentHash(accId, "sessions");
+    const bool sessionsChanged = (sessionsNewFp != sessionsOldFp);
 
-        if (++idx % 100 == 0) {
-            emit syncProgress(accId, "sessions", idx, totalS,
-                              QString("%1 / %2").arg(idx).arg(totalS));
+    // ── 都没变：完全跳过 UI 信号（"没有新内容就不要刷新页面"） ──
+    if (!contactsChanged && !sessionsChanged) {
+        Logger::instance().debug(
+            QString("SyncWorker: %1 元数据未变化，跳过所有 UI 信号").arg(accId), "sync");
+        emit syncProgress(accId, "noop", 0, 0,
+                          QString("内容未变化（%1 联系人 / %2 会话）")
+                              .arg(cl.size()).arg(sl.size()));
+        return true;
+    }
+
+    // ── 联系人变了：流式 emit + 写缓存 + 更新指纹 ──
+    if (contactsChanged) {
+        constexpr int kBatchSize = 200;
+        QVariantList batch;
+        batch.reserve(kBatchSize);
+        int batchIdx = 0;
+        const int total = cl.size();
+        for (int i = 0; i < total; ++i) {
+            batch.append(cl[i]);
+            if ((i + 1) % kBatchSize == 0) {
+                emit syncContactsPartial(accId, batch, batchIdx++);
+                batch.clear();
+                batch.reserve(kBatchSize);
+                emit syncProgress(accId, "contacts", i + 1, total,
+                                  QString("%1 / %2").arg(i + 1).arg(total));
+            }
         }
+        if (!batch.isEmpty()) emit syncContactsPartial(accId, batch, batchIdx);
+        if (!CacheDb::replaceContacts(accId, cl)) {
+            Logger::instance().warn("CacheDb::replaceContacts 失败", "sync");
+        }
+        CacheDb::setContentHash(accId, "contacts", contactsNewFp);
+        emit syncProgress(accId, "contacts", total, total,
+                          QString("完成：%1 个联系人").arg(total));
+    } else {
+        emit syncProgress(accId, "contacts", cl.size(), cl.size(),
+                          QString("联系人未变化（%1 条）").arg(cl.size()));
     }
-    if (!CacheDb::replaceSessions(accId, sl)) {
-        Logger::instance().warn("CacheDb::replaceSessions 失败", "sync");
-    }
-    emit syncProgress(accId, "sessions", totalS, totalS,
-                      QString("完成：%1 个会话").arg(totalS));
 
-    // 通知 UI 刷新列表
+    // ── 会话变了：流式 emit + 写缓存 + 更新指纹 ──
+    if (sessionsChanged) {
+        constexpr int kBatchSizeS = 100;
+        QVariantList batch;
+        batch.reserve(kBatchSizeS);
+        int batchIdx = 0;
+        const int totalS = sl.size();
+        for (int i = 0; i < totalS; ++i) {
+            batch.append(sl[i]);
+            if ((i + 1) % kBatchSizeS == 0) {
+                emit syncSessionsPartial(accId, batch, batchIdx++);
+                batch.clear();
+                batch.reserve(kBatchSizeS);
+                emit syncProgress(accId, "sessions", i + 1, totalS,
+                                  QString("%1 / %2").arg(i + 1).arg(totalS));
+            }
+        }
+        if (!batch.isEmpty()) emit syncSessionsPartial(accId, batch, batchIdx);
+        if (!CacheDb::replaceSessions(accId, sl)) {
+            Logger::instance().warn("CacheDb::replaceSessions 失败", "sync");
+        }
+        CacheDb::setContentHash(accId, "sessions", sessionsNewFp);
+        emit syncProgress(accId, "sessions", totalS, totalS,
+                          QString("完成：%1 个会话").arg(totalS));
+    } else {
+        emit syncProgress(accId, "sessions", sl.size(), sl.size(),
+                          QString("会话未变化（%1 条）").arg(sl.size()));
+    }
+
+    // 至少一个变了：通知 UI 整体完成（让 listPanel 兜底重建，UI 层自身再 short-circuit）
     emit syncAccountDataReady(accId, sl, cl);
     return true;
 }
@@ -315,20 +404,32 @@ bool WeChatSyncWorker::needsResync(const QString& accId, const QString& sourcePa
 
 // ── watcher 回调 ─────────────────────────────────────────────────────
 
+void WeChatSyncWorker::scheduleSync(const QString& accId) {
+    // 已经同步中 / 已排队 / 冷却期内 → 跳过
+    if (m_syncing.contains(accId) || m_pending.contains(accId)) return;
+    const qint64 lastMs = m_lastSyncAt.value(accId, 0);
+    if (lastMs > 0 && QDateTime::currentMSecsSinceEpoch() - lastMs < 2000) {
+        // 2 秒冷却：避免 watcher 触发解密 → 写缓存 → 触发更多 watcher → 反复同步
+        Logger::instance().debug(
+            QString("SyncWorker: %1 冷却期内，跳过").arg(accId), "sync");
+        return;
+    }
+
+    m_pending.insert(accId);
+    QTimer::singleShot(500, this, [this, id = accId]() {
+        m_pending.remove(id);
+        syncAccount(id);
+    });
+}
+
 void WeChatSyncWorker::onWatcherChanged(const QString& path) {
     Q_UNUSED(path);
-    // 找出哪些账号对应的目录被改动，重新触发同步
-    // （简单做法：直接同步所有被监控账号；增量识别由 syncAccount 内 mtime 判断）
+    // 仅判断具体 db 文件是否在被监控列表（精确匹配，不再 startsWith）
     for (auto it = m_watchedDirs.begin(); it != m_watchedDirs.end(); ++it) {
-        for (const QString& p : it.value()) {
-            // QFileSystemWatcher 触发的是绝对路径
-            if (p == path || path.startsWith(p)) {
-                // 延时 500ms 防抖（微信写入是连续的，多次 fileChanged 会刷屏）
-                QTimer::singleShot(500, this, [this, id = it.key()]() {
-                    syncAccount(id);
-                });
-                break;
-            }
+        const auto& paths = it.value();
+        if (paths.contains(path)) {
+            scheduleSync(it.key());
+            break;   // 同一文件变化只算一次（不会重复匹配多层目录）
         }
     }
 }
