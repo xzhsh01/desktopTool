@@ -1,3 +1,4 @@
 /tool/.codebuddy/
-/tool/cpp/build/
+/tool/cpp/build/*
 /tool/cpp/scripts/
+/tool/cpp/out/*
