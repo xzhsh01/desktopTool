@@ -209,6 +209,7 @@ void WeChatListPanel::clearData(const QString& accId) {
 
 void WeChatListPanel::showChatList() {
     if (!m_stack) return;
+    if (m_stack->currentIndex() == 0) return;  // 已在当前页：跳过（重复点击不重建）
     m_stack->setCurrentIndex(0);
     updateTitle();
     rebuildChatList();
@@ -216,6 +217,7 @@ void WeChatListPanel::showChatList() {
 
 void WeChatListPanel::showContactList() {
     if (!m_stack) return;
+    if (m_stack->currentIndex() == 1) return;  // 已在当前页：跳过
     m_stack->setCurrentIndex(1);
     updateTitle();
     rebuildContactList();
@@ -226,6 +228,7 @@ bool WeChatListPanel::isShowingChatList() const {
 }
 
 void WeChatListPanel::setCurrentAccId(const QString& accId) {
+    if (m_currentAccId == accId) return;       // 账号未变：不重建（避免重复点击触发昂贵 list 重建）
     m_currentAccId = accId;
     if (m_stack->currentIndex() == 0) rebuildChatList();
     else                                rebuildContactList();

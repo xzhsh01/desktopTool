@@ -1,6 +1,7 @@
 #include <QApplication>
 #include "app/EmojiFont.h"
 #include <QIcon>
+#include <QLockFile>
 #include <QMessageBox>
 #include <QFile>
 #include <QMetaType>
@@ -87,6 +88,19 @@ int main(int argc, char* argv[]) {
             Logger::instance().info(QString("cleanup: removed %1").arg(id), "app");
         }
         Logger::instance().info(QString("cleanup done, remaining=%1").arg(mgr.accounts().size()), "app");
+        return 0;
+    }
+
+    // ── 单实例锁：禁止重复打开多个应用 ──
+    // 放在 cleanup/selftest 之后：这两个是命令行工具，应允许多步同时运行；
+    // 普通 UI 模式唯一实例，第二次启动会被提示并退出。
+    // 用 QLockFile（Qt 内部处理 stale lock，进程崩溃后会自动释放）。
+    static QLockFile g_instanceLock(QStandardPaths::writableLocation(
+        QStandardPaths::TempLocation) + "/KFrame-bambooRat.lock");
+    if (!g_instanceLock.tryLock(100)) {
+        QMessageBox::information(
+            nullptr, QStringLiteral("提示"),
+            QStringLiteral("应用已在运行中，请勿重复打开。"));
         return 0;
     }
 

@@ -183,9 +183,11 @@ set(COMMON_SOURCES
     src/ssh/SSHTermWidget.cpp
     src/ssh/TerminalEmulator.cpp
     src/wechat/WeChatAccountManager.cpp
+    src/wechat/CacheDb.cpp
     src/wechat/WeChatConfigDialog.cpp
     src/wechat/WeChatDb.cpp
     src/wechat/WeChatKeyExtractor.cpp
+    src/wechat/WeChatSyncWorker.cpp
     src/wechat/WeChatWidget.cpp
     src/wechat/WeChatWorker.cpp
     src/wechat/ui/WeChatSidebar.cpp

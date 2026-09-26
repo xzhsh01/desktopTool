@@ -1,8 +1,9 @@
 #include "WeChatWidget.h"
+#include "CacheDb.h"
 #include "WeChatAccountManager.h"
 #include "WeChatConfigDialog.h"
 #include "WeChatDb.h"
-#include "WeChatWorker.h"
+#include "WeChatSyncWorker.h"
 #include "wechat/ui/WeChatSidebar.h"
 #include "wechat/ui/WeChatDetailPanel.h"
 #include "wechat/ui/WeChatListPanel.h"
@@ -11,6 +12,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QDateTime>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -24,15 +26,22 @@
 #include <QVBoxLayout>
 
 WeChatWidget::WeChatWidget(QWidget* parent) : QWidget(parent) {
+    // 1) 初始化本地缓存库
+    QString err;
+    if (!CacheDb::initialize(&err)) {
+        Logger::instance().error(
+            QString("CacheDb 初始化失败: %1").arg(err), "wechat");
+    }
+
     buildUi();
-    startWorker();
+    startSyncWorker();
     connect(&WeChatAccountManager::instance(), &WeChatAccountManager::changed,
             this, &WeChatWidget::onAccountsChanged);
     onAccountsChanged();
 }
 
 WeChatWidget::~WeChatWidget() {
-    stopWorker();
+    stopSyncWorker();
 }
 
 void WeChatWidget::buildUi() {
@@ -115,18 +124,24 @@ void WeChatWidget::buildUi() {
     m_splitter->setSizes({240, 320, 700});
     workRoot->addWidget(m_splitter, 1);
 
-    // ── 底部状态栏 ──
+    // ── 底部状态栏（流式显示同步进度） ──
     auto* statusBar = new QWidget;
-    statusBar->setFixedHeight(24);
+    statusBar->setFixedHeight(26);
     statusBar->setStyleSheet(QString("background:%1; border-top:1px solid %2;")
                                  .arg(Theme::kBg, Theme::kBorder));
     auto* statusLay = new QHBoxLayout(statusBar);
     statusLay->setContentsMargins(12, 0, 12, 0);
-    auto* statusHint = new QLabel("右键账号或侧边栏空白处可添加 / 编辑微信账号");
-    statusHint->setStyleSheet(QString("color:%1; font-size:11px;").arg(Theme::kFaint));
-    statusLay->addWidget(statusHint);
+    m_statusLabel = new QLabel("就绪");
+    m_statusLabel->setStyleSheet(QString("color:%1; font-size:11px;").arg(Theme::kFaint));
+    statusLay->addWidget(m_statusLabel);
     statusLay->addStretch(1);
     workRoot->addWidget(statusBar);
+
+    // 状态栏节流：syncProgress 频率很高，16ms 节流到一次刷新
+    m_statusTickTimer = new QTimer(this);
+    m_statusTickTimer->setSingleShot(true);
+    m_statusTickTimer->setInterval(120);
+    connect(m_statusTickTimer, &QTimer::timeout, this, &WeChatWidget::onStatusTick);
 
     m_mainStack->addWidget(m_workPage);
 
@@ -153,42 +168,63 @@ void WeChatWidget::buildUi() {
             this, &WeChatWidget::onListShowContact);
 }
 
-void WeChatWidget::setStatus(const QString& text) {
-    Q_UNUSED(text);
-    // 顶部状态标签已移除（按需取消顶部工具栏）
-}
-
-// ── 后台线程管理 ─────────────────────────────────────────────────────────────
-
-void WeChatWidget::startWorker() {
-    m_loadThread = new QThread(this);
-    m_loadWorker = new WeChatWorker;          // 无父对象，由 thread 负责 delete
-    m_loadWorker->moveToThread(m_loadThread);
-    connect(m_loadThread, &QThread::finished,
-            m_loadWorker, &QObject::deleteLater);
-    connect(m_loadWorker, &WeChatWorker::accountLoaded,
-            this, &WeChatWidget::onAccountLoaded);
-    connect(m_loadWorker, &WeChatWorker::accountFailed,
-            this, &WeChatWidget::onAccountFailed);
-    connect(m_loadWorker, &WeChatWorker::messagesLoaded,
-            this, &WeChatWidget::onMessagesLoaded);
-    connect(m_loadWorker, &WeChatWorker::messagesFailed,
-            this, &WeChatWidget::onMessagesFailed);
-    m_loadThread->start();
-    Logger::instance().info("WeChatWidget worker thread started", "wechat");
-}
-
-void WeChatWidget::stopWorker() {
-    if (!m_loadThread) return;
-    m_loadThread->quit();
-    if (!m_loadThread->wait(3000)) {
-        Logger::instance().warn("WeChatWidget worker thread didn't exit in 3s, terminating",
-                                "wechat");
-        m_loadThread->terminate();
-        m_loadThread->wait();
+void WeChatWidget::setStatusText(const QString& text) {
+    m_pendingStatusText = text;
+    if (m_statusTickTimer && !m_statusTickTimer->isActive()) {
+        m_statusTickTimer->start();
     }
-    m_loadThread = nullptr;     // 由 this 父对象析构负责 delete
-    m_loadWorker = nullptr;
+}
+
+void WeChatWidget::onStatusTick() {
+    if (m_statusLabel) m_statusLabel->setText(m_pendingStatusText);
+}
+
+void WeChatWidget::updateStatusBar() {
+    // 留作扩展：可在账号切换时刷新"X 个账号 · Y 个会话"等综合信息
+}
+
+// ── 后台同步线程 ─────────────────────────────────────────────────────────────
+
+void WeChatWidget::startSyncWorker() {
+    m_syncThread = new QThread(this);
+    m_syncWorker = new WeChatSyncWorker;        // 无父对象，由 thread delete
+    m_syncWorker->moveToThread(m_syncThread);
+
+    // worker → UI：Qt 自动 QueuedConnection（跨线程）
+    connect(m_syncWorker, &WeChatSyncWorker::syncStarted,
+            this, &WeChatWidget::onSyncStarted);
+    connect(m_syncWorker, &WeChatSyncWorker::syncProgress,
+            this, &WeChatWidget::onSyncProgress);
+    connect(m_syncWorker, &WeChatSyncWorker::syncAccountDataReady,
+            this, &WeChatWidget::onSyncAccountDataReady);
+    connect(m_syncWorker, &WeChatSyncWorker::syncMessagesReady,
+            this, &WeChatWidget::onSyncMessagesReady);
+    connect(m_syncWorker, &WeChatSyncWorker::syncFinished,
+            this, &WeChatWidget::onSyncFinished);
+    connect(m_syncWorker, &WeChatSyncWorker::syncFailed,
+            this, &WeChatWidget::onSyncFailed);
+
+    connect(m_syncThread, &QThread::finished,
+            m_syncWorker, &QObject::deleteLater);
+    m_syncThread->start();
+    Logger::instance().info("WeChatSyncWorker thread started", "wechat");
+
+    // 启动后立即异步同步所有账号（不阻塞 UI）
+    QMetaObject::invokeMethod(m_syncWorker, "syncAll",
+                              Qt::QueuedConnection);
+}
+
+void WeChatWidget::stopSyncWorker() {
+    if (!m_syncThread) return;
+    m_syncThread->quit();
+    if (!m_syncThread->wait(3000)) {
+        Logger::instance().warn("SyncWorker thread didn't exit in 3s, terminating",
+                                "wechat");
+        m_syncThread->terminate();
+        m_syncThread->wait();
+    }
+    m_syncThread = nullptr;
+    m_syncWorker = nullptr;
 }
 
 void WeChatWidget::updateEmptyState() {
@@ -207,10 +243,18 @@ void WeChatWidget::onAccountsChanged() {
         if (!accs.isEmpty()) {
             m_currentAccountId = accs.first().id;
             if (m_listPanel) m_listPanel->setCurrentAccId(m_currentAccountId);
+            // 立刻从缓存呈现（如果有）
+            presentFromCache(m_currentAccountId);
+            // 同步 worker
+            if (m_syncWorker) {
+                QMetaObject::invokeMethod(m_syncWorker, "watchAccount",
+                                          Qt::QueuedConnection,
+                                          Q_ARG(QString, m_currentAccountId));
+            }
         }
     }
     if (m_sidebar) m_sidebar->rebuildTree(m_currentAccountId);
-    setStatus(QString("账号数：%1").arg(accs.size()));
+    setStatusText(QString("账号数：%1").arg(accs.size()));
 }
 
 void WeChatWidget::openConfig(const QString& editId) {
@@ -256,31 +300,17 @@ void WeChatWidget::onDeleteAccount(const QString& accId) {
 
 void WeChatWidget::onRefreshCurrent() {
     if (m_currentAccountId.isEmpty()) return;
+    // 强制刷新：清缓存 + 触发后台重新同步
     m_sessionsCache.remove(m_currentAccountId);
     m_contactsCache.remove(m_currentAccountId);
     if (m_listPanel) m_listPanel->clearData(m_currentAccountId);
-    loadAccountData(m_currentAccountId);
-    setStatus("已刷新当前账号");
-}
 
-// ── 数据加载（按账号缓存） ─────────────────────────────────────────────────
-
-bool WeChatWidget::loadAccountData(const QString& accId) {
-    if (accId.isEmpty()) return false;
-    // 缓存命中：直接返回成功（不再触发后台 worker）
-    if (m_sessionsCache.contains(accId) && m_contactsCache.contains(accId)) return true;
-
-    auto* acc = WeChatAccountManager::instance().getById(accId);
-    if (!acc) return false;
-
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    setStatus(QString("正在解密 %1 数据库…").arg(acc->name));
-
-    // 提交后台线程执行（不阻塞 UI）
-    QMetaObject::invokeMethod(m_loadWorker, "loadAccountData",
-                              Qt::QueuedConnection,
-                              Q_ARG(QString, accId));
-    return true;        // 表示"任务已提交"，由回调 onAccountLoaded/onAccountFailed 完成状态更新
+    if (m_syncWorker) {
+        QMetaObject::invokeMethod(m_syncWorker, "syncAccount",
+                                  Qt::QueuedConnection,
+                                  Q_ARG(QString, m_currentAccountId));
+    }
+    setStatusText("已请求刷新当前账号…");
 }
 
 // ── sidebar 文件夹点击 → 中栏切页 + 触发加载 ──
@@ -292,8 +322,14 @@ void WeChatWidget::onSidebarChatFolderClicked(const QString& accId) {
         m_listPanel->setCurrentAccId(accId);
         m_listPanel->showChatList();
     }
-    // 触发数据加载（命中缓存直接返回；未命中交给 worker）
-    loadAccountData(accId);
+    // 启动 watcher（首次点击某账号时也启动）
+    if (m_syncWorker) {
+        QMetaObject::invokeMethod(m_syncWorker, "watchAccount",
+                                  Qt::QueuedConnection,
+                                  Q_ARG(QString, accId));
+    }
+    // 优先从 CacheDb 读取（O(1)）；后台持续同步保证数据最新
+    presentFromCache(accId);
 }
 
 void WeChatWidget::onSidebarContactFolderClicked(const QString& accId) {
@@ -303,46 +339,59 @@ void WeChatWidget::onSidebarContactFolderClicked(const QString& accId) {
         m_listPanel->setCurrentAccId(accId);
         m_listPanel->showContactList();
     }
-    loadAccountData(accId);
+    if (m_syncWorker) {
+        QMetaObject::invokeMethod(m_syncWorker, "watchAccount",
+                                  Qt::QueuedConnection,
+                                  Q_ARG(QString, accId));
+    }
+    presentFromCache(accId);
 }
 
 // ── 中栏列表项点击 → 打开聊天 / 联系人详情 ──
 
 void WeChatWidget::onListOpenChat(const QString& accId, const QString& talker) {
     if (talker.isEmpty() || accId.isEmpty()) return;
-    auto* acc = WeChatAccountManager::instance().getById(accId);
-    if (!acc) return;
-
     m_currentAccountId = accId;
     m_currentTalker = talker;
 
-    // 先确保账号数据已加载（同步等待缓存，或交给 worker 异步加载）
-    if (!m_sessionsCache.contains(accId) || !m_contactsCache.contains(accId)) {
-        // 没缓存 → 走 worker 异步加载账号数据；onAccountLoaded 里再触发 loadMessages
-        QApplication::setOverrideCursor(Qt::WaitCursor);
-        setStatus(QString("正在解密 %1 数据库…").arg(acc->name));
-        QMetaObject::invokeMethod(m_loadWorker, "loadAccountData",
-                                  Qt::QueuedConnection,
-                                  Q_ARG(QString, accId));
+    // 直接从 CacheDb 读取消息（O(1)）；同步由后台 worker 异步进行
+    const auto msgs = CacheDb::loadMessages(accId, talker, 0);
+    if (msgs.isEmpty()) {
+        // 缓存空：触发后台补全（可能是首次打开 / 未同步过的会话）
+        if (m_syncWorker) {
+            QMetaObject::invokeMethod(m_syncWorker, "syncAccount",
+                                      Qt::QueuedConnection,
+                                      Q_ARG(QString, accId));
+        }
+        m_detailPanel->showEmpty("该会话尚未同步到本地，等待后台首次同步完成…");
         return;
     }
 
-    // 有缓存 → 直接后台线程加载消息
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    QMetaObject::invokeMethod(m_loadWorker, "loadMessages",
-                              Qt::QueuedConnection,
-                              Q_ARG(QString, accId),
-                              Q_ARG(QString, talker),
-                              Q_ARG(int, 500));
+    // 标题：先查 contacts 缓存里的 display；找不到再用 wxid
+    QString title = talker;
+    const auto& contacts = m_contactsCache.value(accId);
+    for (const auto& v : contacts) {
+        const auto c = v.toMap();
+        if (c["userName"].toString() == talker) {
+            title = c["display"].toString();
+            break;
+        }
+    }
+    if (title == talker) {
+        // 群聊补成员数
+        if (talker.endsWith(QLatin1String("@chatroom"))) {
+            const auto members = CacheDb::loadChatRoomMembers(accId, talker);
+            title += QString("（%1）").arg(members.size());
+        }
+    }
+    m_detailPanel->showChatHeader(title);
+    m_detailPanel->renderMessages(msgs, talker);
+    setStatusText(QString("%1 · %2 条消息").arg(title).arg(msgs.size()));
 }
 
 void WeChatWidget::onListShowContact(const QString& accId, const QString& wxid) {
     if (accId.isEmpty() || wxid.isEmpty()) return;
     m_currentAccountId = accId;
-    if (!loadAccountData(accId)) {
-        m_detailPanel->showEmpty("数据库解密失败");
-        return;
-    }
     const auto& list = m_contactsCache.value(accId);
     for (const auto& v : list) {
         const auto c = v.toMap();
@@ -351,59 +400,104 @@ void WeChatWidget::onListShowContact(const QString& accId, const QString& wxid) 
             return;
         }
     }
+    m_detailPanel->showEmpty("联系人不存在（可能尚未同步）");
 }
 
-// ── worker 完成回调（主线程） ───────────────────────────────────────────────
+// ── SyncWorker 回调（主线程接收） ─────────────────────────────────────────────
 
-void WeChatWidget::onAccountLoaded(const QString& accId,
-                                    const QVariantList& sessions,
-                                    const QVariantList& contacts) {
-    QApplication::restoreOverrideCursor();
+void WeChatWidget::onSyncStarted(const QString& accId, const QString& stage) {
+    Q_UNUSED(stage);
+    auto* acc = WeChatAccountManager::instance().getById(accId);
+    const QString name = acc ? acc->name : accId;
+    setStatusText(QString("🔄 %1 后台同步中…").arg(name));
+}
+
+void WeChatWidget::onSyncProgress(const QString& accId, const QString& stage,
+                                   int current, int total, const QString& msg) {
+    Q_UNUSED(accId);
+    const int pct = (total > 0) ? int(qreal(current) / total * 100.0) : 0;
+    QString text;
+    if (stage == "decrypt") {
+        text = QString("🔓 正在解密数据库…");
+    } else if (stage == "contacts") {
+        text = QString("👥 同步联系人  %1  %2%").arg(msg).arg(pct);
+    } else if (stage == "sessions") {
+        text = QString("💬 同步会话    %1  %2%").arg(msg).arg(pct);
+    } else if (stage == "messages") {
+        text = QString("📨 同步消息    %1").arg(msg);
+    } else {
+        text = QString("[%1] %2 / %3  %4").arg(stage).arg(current).arg(total).arg(msg);
+    }
+    setStatusText(text);
+}
+
+void WeChatWidget::onSyncAccountDataReady(const QString& accId,
+                                           const QVariantList& sessions,
+                                           const QVariantList& contacts) {
     m_sessionsCache.insert(accId, sessions);
     m_contactsCache.insert(accId, contacts);
     if (m_listPanel) {
         m_listPanel->setSessions(accId, sessions);
         m_listPanel->setContacts(accId, contacts);
     }
+}
 
+void WeChatWidget::onSyncMessagesReady(const QString& accId, const QString& talker,
+                                        const QString& title,
+                                        const QList<QVariantMap>& messages) {
+    Q_UNUSED(title);
+    Q_UNUSED(messages);
+    // 仅当用户当前正在看这个会话 → 自动刷新详情
+    if (m_currentAccountId == accId && m_currentTalker == talker) {
+        // 重读 CacheDb（避免数据竞态）
+        const auto msgs = CacheDb::loadMessages(accId, talker, 0);
+        if (!msgs.isEmpty()) {
+            m_detailPanel->showChatHeader(title);
+            m_detailPanel->renderMessages(msgs, talker);
+            setStatusText(QString("%1 · %2 条消息").arg(title).arg(msgs.size()));
+        }
+    }
+}
+
+void WeChatWidget::onSyncFinished(const QString& accId, qint64 elapsedMs) {
     auto* acc = WeChatAccountManager::instance().getById(accId);
-    if (acc) {
-        setStatus(QString("%1 · %2 个会话 · %3 个联系人")
-                      .arg(acc->name).arg(sessions.size()).arg(contacts.size()));
-    }
+    const QString name = acc ? acc->name : accId;
+    m_lastSyncMs.insert(accId, QDateTime::currentMSecsSinceEpoch());
+    const auto sCount = m_sessionsCache.value(accId).size();
+    const auto cCount = m_contactsCache.value(accId).size();
+    setStatusText(QString("✅ %1 同步完成（%2 ms · %3 会话 · %4 联系人）")
+                      .arg(name)
+                      .arg(elapsedMs)
+                      .arg(sCount)
+                      .arg(cCount));
+}
 
-    // 如果用户已点了某个 talker 但还没触发消息加载 → 现在补上
-    if (m_currentAccountId == accId && !m_currentTalker.isEmpty()) {
-        QMetaObject::invokeMethod(m_loadWorker, "loadMessages",
-                                  Qt::QueuedConnection,
-                                  Q_ARG(QString, accId),
-                                  Q_ARG(QString, m_currentTalker),
-                                  Q_ARG(int, 500));
+void WeChatWidget::onSyncFailed(const QString& accId, const QString& reason) {
+    auto* acc = WeChatAccountManager::instance().getById(accId);
+    const QString name = acc ? acc->name : accId;
+    setStatusText(QString("❌ %1 同步失败：%2").arg(name, reason));
+}
+
+// ── 缓存呈现 ────────────────────────────────────────────────────────────────
+
+void WeChatWidget::presentFromCache(const QString& accId) {
+    if (accId.isEmpty()) return;
+    const auto sessions = CacheDb::loadSessions(accId, 0);
+    const auto contacts = CacheDb::loadContacts(accId);
+    m_sessionsCache.insert(accId, sessions);
+    m_contactsCache.insert(accId, contacts);
+    if (m_listPanel) {
+        m_listPanel->setSessions(accId, sessions);
+        m_listPanel->setContacts(accId, contacts);
+    }
+    if (!sessions.isEmpty() || !contacts.isEmpty()) {
+        setStatusText(QString("%1 · 缓存命中：%2 会话 / %3 联系人")
+                          .arg(accId)
+                          .arg(sessions.size())
+                          .arg(contacts.size()));
     }
 }
 
-void WeChatWidget::onAccountFailed(const QString& accId, const QString& reason) {
-    QApplication::restoreOverrideCursor();
-    setStatus(QString("加载失败：%1").arg(reason));
-    if (m_currentAccountId == accId && !m_currentTalker.isEmpty()) {
-        m_detailPanel->showEmpty("数据库解密失败");
-    }
-}
-
-void WeChatWidget::onMessagesLoaded(const QString& accId,
-                                     const QString& talker,
-                                     const QString& title,
-                                     const QList<QVariantMap>& messages) {
-    QApplication::restoreOverrideCursor();
-    if (m_currentAccountId != accId || m_currentTalker != talker) return;
-    m_detailPanel->showChatHeader(title);
-    m_detailPanel->renderMessages(messages, talker);
-}
-
-void WeChatWidget::onMessagesFailed(const QString& accId,
-                                     const QString& talker,
-                                     const QString& reason) {
-    QApplication::restoreOverrideCursor();
-    if (m_currentAccountId != accId || m_currentTalker != talker) return;
-    m_detailPanel->showEmpty(reason);
+bool WeChatWidget::hasCached(const QString& accId) const {
+    return m_sessionsCache.contains(accId) && m_contactsCache.contains(accId);
 }

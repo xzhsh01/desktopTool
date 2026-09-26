@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QHash>
+#include <QPair>
+#include <QSet>
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
@@ -10,11 +12,12 @@ class QLabel;
 class QStackedWidget;
 class QSplitter;
 class QThread;
+class QTimer;
 
 class WeChatSidebar;
 class WeChatDetailPanel;
 class WeChatListPanel;
-class WeChatWorker;
+class WeChatSyncWorker;
 
 /**
  * WeChatWidget: 微信主界面（协调者）
@@ -25,15 +28,25 @@ class WeChatWorker;
  *   │ 账号+文件夹│ 会话/联系人列表   │ empty / chat / contact     │
  *   │ （左栏）   │ （中栏）          │ （右栏）                    │
  *   ├────────────┴──────────────────┴────────────────────────────┤
- *   │ 底部状态栏（账号加载情况 / 数据库解密）                       │
+ *   │ 底部状态栏（实时同步进度：账号 · 阶段 · current/total · 消息） │
  *   └────────────────────────────────────────────────────────────┘
  *
- * 信号流：
- *   sidebar 文件夹点击 → 协调者切换 listPanel 页 + 触发数据加载
- *   listPanel 项点击   → 协调者打开聊天 / 联系人详情
- *   worker 加载完成    → 协调者缓存数据 + 注入 listPanel
+ * 数据流（新架构）：
  *
- * 无账号时整页切换为 m_emptyPage（居中卡片 + 添加按钮）。
+ *   SyncWorker 线程                                  UI 线程
+ *   ┌─────────────────┐                              ┌────────────┐
+ *   │ QFileSystemWatcher                                │
+ *   │       ↓                                           │
+ *   │ WeChatDb::ensureDecrypted()                       │
+ *   │       ↓                                           │
+ *   │ loadContacts / loadSessions / loadMessages        │
+ *   │       ↓ 流式 emit                                  │
+ *   │ CacheDb::replaceContacts/Sessions/Messages        │
+ *   │       ↓ emit syncAccountDataReady                  │
+ *   └─────────────────┘                              ─→ 读 CacheDb → 渲染
+ *
+ *   - UI 只读 CacheDb（O(1)），永远不阻塞主线程
+ *   - 后台同步增量化（按 mtime/size 识别），重复点击零延迟
  */
 class WeChatWidget : public QWidget {
     Q_OBJECT
@@ -64,31 +77,39 @@ private slots:
     void onDeleteAccount(const QString& accId);
     void onRefreshCurrent();
 
-    // worker 完成回调（在主线程接收）
-    void onAccountLoaded(const QString& accId,
-                         const QVariantList& sessions,
-                         const QVariantList& contacts);
-    void onAccountFailed(const QString& accId, const QString& reason);
-    void onMessagesLoaded(const QString& accId,
-                          const QString& talker,
-                          const QString& title,
-                          const QList<QVariantMap>& messages);
-    void onMessagesFailed(const QString& accId,
-                          const QString& talker,
-                          const QString& reason);
+    // SyncWorker 回调（在主线程接收）
+    void onSyncStarted(const QString& accId, const QString& stage);
+    void onSyncProgress(const QString& accId, const QString& stage,
+                        int current, int total, const QString& msg);
+    void onSyncAccountDataReady(const QString& accId,
+                                const QVariantList& sessions,
+                                const QVariantList& contacts);
+    void onSyncMessagesReady(const QString& accId, const QString& talker,
+                             const QString& title,
+                             const QList<QVariantMap>& messages);
+    void onSyncFinished(const QString& accId, qint64 elapsedMs);
+    void onSyncFailed(const QString& accId, const QString& reason);
+
+    // 状态栏节流刷新（同步进度事件频率很高，合并刷新）
+    void onStatusTick();
 
 private:
     void buildUi();
     void updateEmptyState();                // 切换 m_mainStack
     void setCurrentAccount(const QString& accId);   // 切换当前账号 + 同步中栏
 
-    // 启动后台 worker 线程（数据加载专用）
-    void startWorker();
-    // 停止后台 worker 线程（析构时调用）
-    void stopWorker();
-    // 数据加载（按账号缓存；命中缓存直接返回，未命中交给 worker）
-    bool loadAccountData(const QString& accId);
-    void setStatus(const QString& text);
+    // 启动后台 sync worker 线程
+    void startSyncWorker();
+    // 停止后台 sync worker 线程（析构时调用）
+    void stopSyncWorker();
+
+    // 同步显示某账号（从 CacheDb 取数据注入 UI）
+    void presentFromCache(const QString& accId);
+    // 缓存查询：判断某账号是否已有同步好的数据
+    bool hasCached(const QString& accId) const;
+    // 状态栏文本（节流：只显示"最后一次 updateStatusBar 调用"）
+    void updateStatusBar();
+    void setStatusText(const QString& text);
 
     // ── 控件 ──
     QStackedWidget*   m_mainStack   = nullptr;     // 0 空账号 / 1 工作
@@ -98,15 +119,21 @@ private:
     WeChatSidebar*    m_sidebar     = nullptr;
     WeChatListPanel*  m_listPanel   = nullptr;
     WeChatDetailPanel* m_detailPanel = nullptr;
+    QLabel*           m_statusLabel = nullptr;     // 底部状态栏
 
-    // ── 后台线程（数据加载专用） ──
-    QThread*      m_loadThread = nullptr;
-    WeChatWorker* m_loadWorker = nullptr;
+    // ── 后台同步线程 ──
+    QThread*            m_syncThread = nullptr;
+    WeChatSyncWorker*   m_syncWorker = nullptr;
 
-    // ── 缓存 ──
-    QHash<QString, QVariantList> m_sessionsCache;
-    QHash<QString, QVariantList> m_contactsCache;
+    // ── UI 缓存（已渲染的元数据，避免重复注入 listPanel） ──
+    QHash<QString, QVariantList> m_sessionsCache;     // accId -> sessions
+    QHash<QString, QVariantList> m_contactsCache;     // accId -> contacts
+    QHash<QString, qint64>       m_lastSyncMs;        // accId -> 上次完成时间戳
 
     QString m_currentAccountId;
     QString m_currentTalker;
+
+    // ── 状态栏节流 ──
+    QTimer* m_statusTickTimer = nullptr;
+    QString m_pendingStatusText;
 };
