@@ -13,26 +13,27 @@ class QThread;
 
 class WeChatSidebar;
 class WeChatDetailPanel;
+class WeChatListPanel;
 class WeChatWorker;
 
 /**
  * WeChatWidget: 微信主界面（协调者）
  *
- * 布局（参考邮箱 MailWidget 架构）：
- *   ┌────────────────────────────────────────────┐
- *   │ 顶部：标题"微信"                  [状态]  │   工具栏
- *   ├────────────────────────────────────────────┤
- *   │                                            │
- *   │    [WeChatSidebar]  │  [WeChatDetailPanel] │
- *   │    （搜索 + 树）    │  （empty/chat/contact）│   splitter 二栏
- *   │                                            │
- *   ├────────────────────────────────────────────┤
- *   │ 底部状态栏（账号加载情况 / 数据库解密）      │
- *   └────────────────────────────────────────────┘
+ * 三栏布局：
+ *   ┌────────────┬──────────────────┬────────────────────────────┐
+ *   │ Sidebar    │ ListPanel        │ DetailPanel                │
+ *   │ 账号+文件夹│ 会话/联系人列表   │ empty / chat / contact     │
+ *   │ （左栏）   │ （中栏）          │ （右栏）                    │
+ *   ├────────────┴──────────────────┴────────────────────────────┤
+ *   │ 底部状态栏（账号加载情况 / 数据库解密）                       │
+ *   └────────────────────────────────────────────────────────────┘
  *
- *  - 无账号时整页切换为 m_emptyPage（居中卡片 + 添加按钮）
- *  - 业务逻辑（数据库加载、密钥解密）在本类内完成；
- *    UI / 状态在两个独立面板中。
+ * 信号流：
+ *   sidebar 文件夹点击 → 协调者切换 listPanel 页 + 触发数据加载
+ *   listPanel 项点击   → 协调者打开聊天 / 联系人详情
+ *   worker 加载完成    → 协调者缓存数据 + 注入 listPanel
+ *
+ * 无账号时整页切换为 m_emptyPage（居中卡片 + 添加按钮）。
  */
 class WeChatWidget : public QWidget {
     Q_OBJECT
@@ -48,11 +49,15 @@ public:
 private slots:
     // 监听账号变化
     void onAccountsChanged();
-    // 侧边栏信号
-    void onSidebarLoadSessions(const QString& accId);
-    void onSidebarLoadContacts(const QString& accId);
-    void onSidebarOpenChat(const QString& accId, const QString& talker);
-    void onSidebarShowContact(const QString& accId, const QString& wxid);
+
+    // sidebar 文件夹点击 → 中栏切换 + 触发加载
+    void onSidebarChatFolderClicked(const QString& accId);
+    void onSidebarContactFolderClicked(const QString& accId);
+
+    // listPanel 项点击 → 打开聊天 / 联系人详情
+    void onListOpenChat(const QString& accId, const QString& talker);
+    void onListShowContact(const QString& accId, const QString& wxid);
+
     // 侧边栏账号操作
     void onAddAccount();
     void onEditAccount(const QString& accId);
@@ -75,6 +80,7 @@ private slots:
 private:
     void buildUi();
     void updateEmptyState();                // 切换 m_mainStack
+    void setCurrentAccount(const QString& accId);   // 切换当前账号 + 同步中栏
 
     // 启动后台 worker 线程（数据加载专用）
     void startWorker();
@@ -90,6 +96,7 @@ private:
     QWidget*          m_workPage    = nullptr;
     QSplitter*        m_splitter    = nullptr;
     WeChatSidebar*    m_sidebar     = nullptr;
+    WeChatListPanel*  m_listPanel   = nullptr;
     WeChatDetailPanel* m_detailPanel = nullptr;
 
     // ── 后台线程（数据加载专用） ──

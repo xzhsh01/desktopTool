@@ -190,6 +190,7 @@ set(COMMON_SOURCES
     src/wechat/WeChatWorker.cpp
     src/wechat/ui/WeChatSidebar.cpp
     src/wechat/ui/WeChatDetailPanel.cpp
+    src/wechat/ui/WeChatListPanel.cpp
 )
 
 # ---------------------------------------------------------------------------

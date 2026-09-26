@@ -5,6 +5,7 @@
 #include "WeChatWorker.h"
 #include "wechat/ui/WeChatSidebar.h"
 #include "wechat/ui/WeChatDetailPanel.h"
+#include "wechat/ui/WeChatListPanel.h"
 #include "app/Theme.h"
 #include "core/Logger.h"
 
@@ -101,13 +102,17 @@ void WeChatWidget::buildUi() {
     m_splitter = new QSplitter(Qt::Horizontal, this);
     m_splitter->setChildrenCollapsible(false);
     m_sidebar = new WeChatSidebar;
-    m_sidebar->setMinimumWidth(220);
+    m_sidebar->setMinimumWidth(200);
+    m_listPanel = new WeChatListPanel;
+    m_listPanel->setMinimumWidth(240);
     m_detailPanel = new WeChatDetailPanel;
     m_splitter->addWidget(m_sidebar);
+    m_splitter->addWidget(m_listPanel);
     m_splitter->addWidget(m_detailPanel);
     m_splitter->setStretchFactor(0, 0);
-    m_splitter->setStretchFactor(1, 1);
-    m_splitter->setSizes({280, 800});
+    m_splitter->setStretchFactor(1, 0);
+    m_splitter->setStretchFactor(2, 1);
+    m_splitter->setSizes({240, 320, 700});
     workRoot->addWidget(m_splitter, 1);
 
     // ── 底部状态栏 ──
@@ -134,14 +139,18 @@ void WeChatWidget::buildUi() {
             this, &WeChatWidget::onDeleteAccount);
     connect(m_sidebar, &WeChatSidebar::refreshRequested,
             this, &WeChatWidget::onRefreshCurrent);
-    connect(m_sidebar, &WeChatSidebar::loadSessionsRequested,
-            this, &WeChatWidget::onSidebarLoadSessions);
-    connect(m_sidebar, &WeChatSidebar::loadContactsRequested,
-            this, &WeChatWidget::onSidebarLoadContacts);
-    connect(m_sidebar, &WeChatSidebar::openChatRequested,
-            this, &WeChatWidget::onSidebarOpenChat);
-    connect(m_sidebar, &WeChatSidebar::showContactRequested,
-            this, &WeChatWidget::onSidebarShowContact);
+
+    // 文件夹点击 → 中栏切页 + 触发数据加载
+    connect(m_sidebar, &WeChatSidebar::chatFolderClicked,
+            this, &WeChatWidget::onSidebarChatFolderClicked);
+    connect(m_sidebar, &WeChatSidebar::contactFolderClicked,
+            this, &WeChatWidget::onSidebarContactFolderClicked);
+
+    // 中栏项点击 → 打开聊天 / 联系人详情
+    connect(m_listPanel, &WeChatListPanel::chatItemClicked,
+            this, &WeChatWidget::onListOpenChat);
+    connect(m_listPanel, &WeChatListPanel::contactItemClicked,
+            this, &WeChatWidget::onListShowContact);
 }
 
 void WeChatWidget::setStatus(const QString& text) {
@@ -191,8 +200,17 @@ void WeChatWidget::updateEmptyState() {
 
 void WeChatWidget::onAccountsChanged() {
     updateEmptyState();
+    // 账号列表变化后，若当前选中账号已失效，重置为第一个账号
+    const auto& accs = WeChatAccountManager::instance().accounts();
+    if (m_currentAccountId.isEmpty() ||
+        !WeChatAccountManager::instance().getById(m_currentAccountId)) {
+        if (!accs.isEmpty()) {
+            m_currentAccountId = accs.first().id;
+            if (m_listPanel) m_listPanel->setCurrentAccId(m_currentAccountId);
+        }
+    }
     if (m_sidebar) m_sidebar->rebuildTree(m_currentAccountId);
-    setStatus(QString("账号数：%1").arg(WeChatAccountManager::instance().accounts().size()));
+    setStatus(QString("账号数：%1").arg(accs.size()));
 }
 
 void WeChatWidget::openConfig(const QString& editId) {
@@ -208,6 +226,7 @@ void WeChatWidget::selectAccount(const QString& accountId) {
     m_currentAccountId = accountId;
     updateEmptyState();
     if (m_sidebar) m_sidebar->selectAccount(accountId);
+    if (m_listPanel) m_listPanel->setCurrentAccId(accountId);
 }
 
 // ── 侧边栏操作 ─────────────────────────────────────────────────────────────
@@ -237,11 +256,10 @@ void WeChatWidget::onDeleteAccount(const QString& accId) {
 
 void WeChatWidget::onRefreshCurrent() {
     if (m_currentAccountId.isEmpty()) return;
-    if (m_sidebar) m_sidebar->clearData(m_currentAccountId);
     m_sessionsCache.remove(m_currentAccountId);
     m_contactsCache.remove(m_currentAccountId);
-    onSidebarLoadContacts(m_currentAccountId);
-    onSidebarLoadSessions(m_currentAccountId);
+    if (m_listPanel) m_listPanel->clearData(m_currentAccountId);
+    loadAccountData(m_currentAccountId);
     setStatus("已刷新当前账号");
 }
 
@@ -265,17 +283,32 @@ bool WeChatWidget::loadAccountData(const QString& accId) {
     return true;        // 表示"任务已提交"，由回调 onAccountLoaded/onAccountFailed 完成状态更新
 }
 
-void WeChatWidget::onSidebarLoadSessions(const QString& accId) {
+// ── sidebar 文件夹点击 → 中栏切页 + 触发加载 ──
+
+void WeChatWidget::onSidebarChatFolderClicked(const QString& accId) {
     if (accId.isEmpty()) return;
+    m_currentAccountId = accId;
+    if (m_listPanel) {
+        m_listPanel->setCurrentAccId(accId);
+        m_listPanel->showChatList();
+    }
+    // 触发数据加载（命中缓存直接返回；未命中交给 worker）
     loadAccountData(accId);
 }
 
-void WeChatWidget::onSidebarLoadContacts(const QString& accId) {
+void WeChatWidget::onSidebarContactFolderClicked(const QString& accId) {
     if (accId.isEmpty()) return;
+    m_currentAccountId = accId;
+    if (m_listPanel) {
+        m_listPanel->setCurrentAccId(accId);
+        m_listPanel->showContactList();
+    }
     loadAccountData(accId);
 }
 
-void WeChatWidget::onSidebarOpenChat(const QString& accId, const QString& talker) {
+// ── 中栏列表项点击 → 打开聊天 / 联系人详情 ──
+
+void WeChatWidget::onListOpenChat(const QString& accId, const QString& talker) {
     if (talker.isEmpty() || accId.isEmpty()) return;
     auto* acc = WeChatAccountManager::instance().getById(accId);
     if (!acc) return;
@@ -303,7 +336,7 @@ void WeChatWidget::onSidebarOpenChat(const QString& accId, const QString& talker
                               Q_ARG(int, 500));
 }
 
-void WeChatWidget::onSidebarShowContact(const QString& accId, const QString& wxid) {
+void WeChatWidget::onListShowContact(const QString& accId, const QString& wxid) {
     if (accId.isEmpty() || wxid.isEmpty()) return;
     m_currentAccountId = accId;
     if (!loadAccountData(accId)) {
@@ -328,9 +361,9 @@ void WeChatWidget::onAccountLoaded(const QString& accId,
     QApplication::restoreOverrideCursor();
     m_sessionsCache.insert(accId, sessions);
     m_contactsCache.insert(accId, contacts);
-    if (m_sidebar) {
-        m_sidebar->setSessions(accId, sessions);
-        m_sidebar->setContacts(accId, contacts);
+    if (m_listPanel) {
+        m_listPanel->setSessions(accId, sessions);
+        m_listPanel->setContacts(accId, contacts);
     }
 
     auto* acc = WeChatAccountManager::instance().getById(accId);
