@@ -1,6 +1,7 @@
 #include "wechat/ui/WeChatSidebar.h"
 #include "wechat/WeChatAccountManager.h"
 #include "app/Theme.h"
+#include "core/Logger.h"
 
 #include <QAction>
 #include <QCryptographicHash>
@@ -75,7 +76,10 @@ void WeChatSidebar::buildUi() {
     // ── 树形侧边栏：账号 → 两个分组头（可点击，不再展开叶子节点） ──
     m_tree = new QTreeWidget;
     m_tree->setHeaderHidden(true);
-    m_tree->setRootIsDecorated(false);            // 根节点不画展开箭头（叶子直接在根下）
+    // 注意：不能 setRootIsDecorated(false)，否则 Qt 会把 top-level 当作叶子处理，
+    // 即使 setExpanded(true) 也不会渲染子节点。
+    // 改为用 stylesheet 隐藏 branch（连接线 + 箭头）
+    m_tree->setRootIsDecorated(true);
     m_tree->setExpandsOnDoubleClick(false);       // 单击触发
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_tree->setMinimumWidth(200);
@@ -93,7 +97,14 @@ void WeChatSidebar::buildUi() {
         "QTreeWidget::item:pressed{background:%5;}"
         "QTreeWidget::item:selected{background:%6;color:%7;font-weight:600;}"
         "QTreeWidget::item:selected:hover{background:%8;}"
-        "QTreeWidget::branch{background:transparent;}")
+        "QTreeWidget::branch{background:transparent;border-image:none;}"
+        "QTreeWidget::branch:has-siblings:!adjoins-item{border-image:none;}"
+        "QTreeWidget::branch:has-siblings:adjoins-item{border-image:none;}"
+        "QTreeWidget::branch:!has-children:!has-siblings:adjoins-item{border-image:none;}"
+        "QTreeWidget::branch:has-children:!has-siblings:closed,"
+        "QTreeWidget::branch:closed:has-children:has-siblings{border-image:none;}"
+        "QTreeWidget::branch:open:has-children:!has-siblings,"
+        "QTreeWidget::branch:open:has-children:has-siblings{border-image:none;}")
         .arg(Theme::kBg, Theme::kBorder, Theme::kText,
              Theme::kSurface,         // hover
              Theme::kBorder,          // pressed
@@ -130,6 +141,8 @@ void WeChatSidebar::rebuildTree(const QString& selectAccId) {
     m_tree->blockSignals(true);
     m_tree->clear();
 
+    Logger::instance().info(QString("[sidebar] rebuildTree: accounts=%1").arg(WeChatAccountManager::instance().accounts().size()), "wechat");
+
     for (const auto& a : WeChatAccountManager::instance().accounts()) {
         auto* accItem = makeAccountItem(a.id, a.name);
         m_tree->addTopLevelItem(accItem);
@@ -143,6 +156,14 @@ void WeChatSidebar::rebuildTree(const QString& selectAccId) {
         chatGroup->setData(0, Qt::UserRole, a.id);
         chatGroup->setText(0, buildChatLabel(m_sessionsByAcc.value(a.id)));
         accItem->addChild(chatGroup);
+
+        // 关键：必须先 addChild 再 setExpanded(true)
+        // —— 在没有 child 时调用 setExpanded(true) 会被 Qt 忽略
+        accItem->setExpanded(true);
+
+        Logger::instance().info(QString("[sidebar] account '%1': childCount=%2, expanded=%3, topLevel=%4, total=%5")
+            .arg(a.name).arg(accItem->childCount()).arg(accItem->isExpanded()?1:0)
+            .arg(m_tree->topLevelItemCount()).arg(m_tree->model()->rowCount()), "wechat");
     }
     m_tree->blockSignals(false);
 
@@ -159,8 +180,10 @@ QTreeWidgetItem* WeChatSidebar::makeAccountItem(const QString& accId,
     QFont f = it->font(0);
     f.setBold(true);
     it->setFont(0, f);
-    it->setExpanded(true);
-    it->setFlags(Qt::ItemIsEnabled);   // 账号根不响应选中事件
+    // 注意：不要在这里 setExpanded(true)！Qt 在没有 child 时不会保持展开状态。
+    // 必须在 addChild 之后再 setExpanded(true)，由 rebuildTree 负责调用。
+    it->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator); // 不画展开箭头
+    it->setFlags(Qt::ItemIsEnabled);                             // 账号根不响应选中事件
     return it;
 }
 
