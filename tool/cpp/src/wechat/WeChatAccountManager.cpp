@@ -196,6 +196,34 @@ WeChatAccountManager::discoverLocalAccounts() const {
     const QString docs = documentsDir();
     if (!docs.isEmpty() && !roots.contains(docs)) roots << docs;
 
+    // ── 微信 4.x 自定义存储位置 ──
+    // 4.x 不走 3.x 的 3ebffe94.ini，而是写在
+    //   %APPDATA%/Tencent/xwechat/config/<md5>.ini
+    // 文件内容为存储根路径（如 "E:\"），数据实际位于其下 xwechat_files\ 目录。
+    // 遍历该目录所有 ini，把有效路径补进扫描根（默认「文档」之外的自定义位置靠它发现）。
+    {
+        const QString xcfgDir = QDir::cleanPath(QDir::fromNativeSeparators(
+            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+            + "/../../Tencent/xwechat/config"));
+        const QFileInfoList inis = QDir(xcfgDir).entryInfoList(
+            QStringList() << "*.ini", QDir::Files);
+        for (const QFileInfo& ini : inis) {
+            QFile f(ini.absoluteFilePath());
+            if (!f.open(QIODevice::ReadOnly)) continue;
+            QString line = QDir::fromNativeSeparators(
+                QString::fromUtf8(f.readAll()).trimmed());
+            f.close();
+            if (line.isEmpty()) continue;
+            QString root = QDir::cleanPath(line);
+            // 内容也可能直接指到 xwechat_files 本身，统一还原为其父目录
+            if (root.endsWith(QStringLiteral("/xwechat_files")))
+                root.chop(QStringLiteral("/xwechat_files").size());
+            if (root.isEmpty() || roots.contains(root)) continue;
+            if (QDir(root + "/xwechat_files").exists())
+                roots << root;
+        }
+    }
+
     static const QRegularExpression wxidRe(
         "^wxid_[a-zA-Z0-9_-]+$");
 

@@ -201,6 +201,7 @@ set(COMMON_SOURCES
 add_executable(bambooRat WIN32
     ${COMMON_SOURCES}
     src/core/ConfigStore.cpp
+    src/compat/openssl_shim.c
 )
 target_include_directories(bambooRat PRIVATE src)
 target_include_directories(bambooRat PRIVATE "${LIBSSH_DIR}/include")
