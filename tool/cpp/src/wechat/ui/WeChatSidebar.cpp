@@ -11,8 +11,10 @@
 #include <QMap>
 #include <QMenu>
 #include <QPainter>
+#include <QProxyStyle>
 #include <QPushButton>
 #include <QSet>
+#include <QStyleOption>
 #include <QStyledItemDelegate>
 #include <QTextDocument>
 #include <QTreeWidget>
@@ -93,6 +95,51 @@ public:
     }
 };
 
+// 拦截 Qt 6.12 给 QTreeWidget 画的 PE_IndicatorBranch（root item 左侧那个
+// "selection marker" 蓝色矩形）和 PE_IndicatorArrow。styleshset 的 image:none /
+// border-image:none 都不足以干掉它们，必须从 primitive 层面禁用。
+class NoBranchStyle : public QProxyStyle {
+public:
+    using QProxyStyle::QProxyStyle;
+    void drawPrimitive(PrimitiveElement pe,
+                       const QStyleOption* opt,
+                       QPainter* p,
+                       const QWidget* w) const override {
+        if (pe == PE_IndicatorBranch ||
+            pe == PE_IndicatorArrowRight ||
+            pe == PE_IndicatorArrowDown ||
+            pe == PE_IndicatorArrowLeft  ||
+            pe == PE_IndicatorArrowUp    ||
+            pe == PE_FrameFocusRect      ||
+            pe == PE_PanelItemViewItem   ||
+            pe == PE_PanelItemViewRow    ||
+            pe == PE_IndicatorItemViewItemDrop) {
+            return;   // 不画
+        }
+        QProxyStyle::drawPrimitive(pe, opt, p, w);
+    }
+
+    // 关键拦截：Qt 6.12 在 QTreeView::paintRow 末尾用 CE_ItemViewItem 重画 selected 装饰
+    // （包含 branch 区的 selection marker）。我们让 stylesheet 完全负责画 selected bg。
+    // 但为防止 selected bg 也被吞，这里只在 item 的 branch 区域（即 rect.left() < indentation 范围）
+    // 跳过重画，其它区域仍走默认。
+    void drawControl(ControlElement ce,
+                     const QStyleOption* opt,
+                     QPainter* p,
+                     const QWidget* w) const override {
+        if (ce == CE_ItemViewItem) {
+            const QStyleOptionViewItem* iv =
+                qstyleoption_cast<const QStyleOptionViewItem*>(opt);
+            // QTreeView 重画 selected 装饰时 rect 落在 branch 区（width ≈ 14-16）
+            // 我们拦截掉，让 stylesheet 的 ::item:selected background 唯一生效。
+            if (iv && iv->rect.width() <= 18) {
+                return;
+            }
+        }
+        QProxyStyle::drawControl(ce, opt, p, w);
+    }
+};
+
 } // namespace
 
 WeChatSidebar::WeChatSidebar(QWidget* parent) : QWidget(parent) {
@@ -135,13 +182,15 @@ void WeChatSidebar::buildUi() {
     m_tree->setHeaderHidden(true);
     // 注意：不能 setRootIsDecorated(false)，否则 Qt 会把 top-level 当作叶子处理，
     // 即使 setExpanded(true) 也不会渲染子节点。
-    m_tree->setRootIsDecorated(true);
+    m_tree->setRootIsDecorated(false);
     m_tree->setExpandsOnDoubleClick(false);       // 单击触发
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_tree->setMinimumWidth(200);
-    m_tree->setIndentation(14);
+    m_tree->setIndentation(0);
     m_tree->setUniformRowHeights(false);          // 关键：true 在 Qt 6.12 + branch CSS 下会吞掉 children 行高
     m_tree->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_tree->setFocusPolicy(Qt::NoFocus);    // Qt 6.12 在 selected item 上画 focus rect，去掉它
+    m_tree->setStyle(new NoBranchStyle(m_tree->style()));   // 拦截 PE_IndicatorBranch 等选择器绘制
     m_tree->setItemDelegate(new HtmlItemDelegate(m_tree));  // 让分组头按 HTML 富文本渲染
 
     // ── 三态视觉：hover / pressed / selected，都给明确反馈 ──
@@ -150,13 +199,17 @@ void WeChatSidebar::buildUi() {
     // 导致子节点根本不被绘制。改为只设 background:transparent。
     m_tree->setStyleSheet(QString(
         "QTreeWidget{background:%1;border:1px solid %2;outline:0;color:%3;}"
-        "QTreeWidget::item{height:32px;border-radius:6px;margin:1px 4px;"
-        "padding:0 8px;border:none;}"
+        "QTreeWidget::item{height:32px;border-radius:6px;margin:1px 0px;"
+        "padding:0 8px;border:none;outline:0;}"
         "QTreeWidget::item:hover{background:%4;}"
         "QTreeWidget::item:pressed{background:%5;}"
         "QTreeWidget::item:selected{background:%6;color:%7;font-weight:600;}"
         "QTreeWidget::item:selected:hover{background:%8;}"
-        "QTreeWidget::branch{background:transparent;}")
+        "QTreeWidget::branch{background:transparent; width:0px;}"
+        "QTreeWidget::branch:has-children:!has-siblings:closed,"
+        "QTreeWidget::branch:has-children:has-siblings:closed,"
+        "QTreeWidget::branch:has-children:!has-siblings:opened,"
+        "QTreeWidget::branch:has-children:has-siblings:opened{image:none; border-image:none;}")
         .arg(Theme::kBg, Theme::kBorder, Theme::kText,
              Theme::kSurface,         // hover
              Theme::kBorder,          // pressed
@@ -183,11 +236,10 @@ void WeChatSidebar::selectAccount(const QString& accId) {
     if (!m_tree || accId.isEmpty()) return;
     auto* it = findAccountItem(accId);
     if (!it) return;
-    m_tree->setCurrentItem(it);
-    // 选中时强制展开，确保右侧缩进区里的 👥 联系人 / 💬 聊天 + 徽标 都被绘制。
+    // 不把 root 设为 currentItem（避免 Qt 6.12 给 root 画 branch 区 selected 高亮块）。
+    // 只展开 + 选中第一个 child（联系人）。
     m_tree->expandItem(it);
     if (it->childCount() > 0) m_tree->setCurrentItem(it->child(0));
-    m_tree->expandItem(it);
 }
 
 void WeChatSidebar::rebuildTree(const QString& selectAccId) {
