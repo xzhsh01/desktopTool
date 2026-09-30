@@ -167,6 +167,12 @@ void WeChatSidebar::rebuildTree(const QString& selectAccId) {
     }
     m_tree->blockSignals(false);
 
+    // 兜底：在 blockSignals 之外再调一次 expand()，确保子节点在样式/选择模型稳定后被绘制
+    for (int i = 0; i < m_tree->topLevelItemCount(); ++i) {
+        auto* it = m_tree->topLevelItem(i);
+        if (it && it->childCount() > 0) it->setExpanded(true);
+    }
+
     if (!target.isEmpty()) selectAccount(target);
 }
 
@@ -183,7 +189,10 @@ QTreeWidgetItem* WeChatSidebar::makeAccountItem(const QString& accId,
     // 注意：不要在这里 setExpanded(true)！Qt 在没有 child 时不会保持展开状态。
     // 必须在 addChild 之后再 setExpanded(true)，由 rebuildTree 负责调用。
     it->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator); // 不画展开箭头
-    it->setFlags(Qt::ItemIsEnabled);                             // 账号根不响应选中事件
+    // 关键：必须保留 ItemIsSelectable —— Qt 6 在父节点缺少可点击态且隐藏分支指示符时，
+    // 子节点有时不会被绘制。点击命中由 onTreeItemClicked 内 NodeType 分发去忽略，
+    // 不影响"账号根不可被选中"的语义。
+    it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     return it;
 }
 

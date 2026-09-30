@@ -1,17 +1,25 @@
-/* OpenSSL 1.1 -> 3.x ABI 兼容垫片
+/*
+ * OpenSSL ABI compatibility shim for libssh (built against OpenSSL 1.1 headers).
  *
- * third_party/libssh 预编译静态库 (libssh.a) 是按 OpenSSL 1.1 头文件编译的，
- * 其中引用了以下符号：
+ * libssh.a was compiled against OpenSSL 1.1 and references:
  *   - EVP_PKEY_base_id / EVP_PKEY_size / EVP_PKEY_bits
- *     OpenSSL 3 中已退化为宏（#define EVP_PKEY_base_id EVP_PKEY_get_base_id），
- *     libcrypto 不再导出同名符号；
+ *     In OpenSSL 1.1 these are real exported functions.
+ *     In OpenSSL 3.x they became macros around EVP_PKEY_get_base_id etc.,
+ *     and libcrypto no longer exports the 1.1 symbol names.
  *   - FIPS_mode
- *     OpenSSL 3 中已彻底移除（FIPS 由 provider 机制接管）。
+ *     Removed in OpenSSL 3.x (FIPS is now a provider).
  *
- * 此处补齐这些符号，语义与 1.1 完全一致：
- *   FIPS_mode() 返回 0 表示未处于 FIPS 模式（OpenSSL 3 默认无 FIPS provider）。
+ * Strategy:
+ *   - Detect OpenSSL version via OPENSSL_VERSION_NUMBER macro.
+ *   - On OpenSSL >= 3.0: provide 1.1-compatible wrapper functions that
+ *     delegate to the OpenSSL 3 API, and a stub FIPS_mode returning 0.
+ *   - On OpenSSL < 3.0 (1.1.x): provide nothing here; the real symbols
+ *     from libcrypto are linked directly. The file compiles to an empty TU.
  */
 #include <openssl/evp.h>
+#include <openssl/opensslv.h>
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
 
 #undef EVP_PKEY_base_id
 #undef EVP_PKEY_size
@@ -34,5 +42,8 @@ int EVP_PKEY_bits(const EVP_PKEY *pkey)
 
 int FIPS_mode(void)
 {
+    /* OpenSSL 3 default: no FIPS provider loaded -> not in FIPS mode. */
     return 0;
 }
+
+#endif /* OPENSSL_VERSION_NUMBER >= 3.0 */
