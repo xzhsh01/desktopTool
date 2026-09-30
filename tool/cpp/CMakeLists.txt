@@ -27,7 +27,24 @@ if(MINGW)
     set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} -I ${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network Sql Gui Core)
+# Qt6 在桌面 UI 模块里是 REQUIRED；没有 Qt 时降级为只编纯 C/C++ 子集 + smoke 测试。
+# BR_REQUIRE_QT=OFF 选项强制走降级路径（用于"装 Qt 之前先用 smoke 验证工具链"的场景）。
+option(BR_REQUIRE_QT "Require Qt6 (fails if not found)" ON)
+if(BR_REQUIRE_QT)
+    find_package(Qt6 REQUIRED COMPONENTS Widgets Network Sql Gui Core)
+else()
+    find_package(Qt6 COMPONENTS Widgets Network Sql Gui Core QUIET)
+    if(NOT Qt6_FOUND)
+        message(WARNING
+            "============================================================\n"
+            " Qt6 not found — building Qt-free subset only:\n"
+            "   - sqlite3 (static)\n"
+            "   - bamboo_toolchain_check (smoke exe)\n"
+            " Re-run with -DBR_REQUIRE_QT=ON (default) after installing Qt\n"
+            " to build the full bambooRat / verifykey / keytest executables.\n"
+            "============================================================")
+    endif()
+endif()
 
 # OpenSSL: 邮件加密 (PBKDF2 + AES-256-GCM, S/MIME via CMS API)
 # Windows 下没有系统级 OpenSSL，回退到 Qt MinGW 发行版自带的 MSYS2 opt 目录
@@ -42,7 +59,14 @@ if(NOT DEFINED OPENSSL_ROOT_DIR)
         endif()
     endforeach()
 endif()
-find_package(OpenSSL REQUIRED)
+# Qt-less 模式允许 OpenSSL 也缺（不编 bambooRat / openssl_shim / libssh 链接的产物）。
+# 装 Qt 之后 Qt 自带 MSYS2 opt 会让 OpenSSL 自动可被找到。
+find_package(OpenSSL QUIET)
+if(NOT OPENSSL_FOUND)
+    message(WARNING
+        "  OpenSSL not found — openssl_shim / bambooRat / libssh 链接的 target 会跳过。"
+        " 装 Qt 后重新配置即可（Qt 自带 MSYS2 opt 里有 OpenSSL）。")
+endif()
 
 # ---------------------------------------------------------------------------
 # SQLite (amalgamation 源码直接编译，纯 C 接口，无 ABI 风险)
@@ -51,6 +75,21 @@ add_library(sqlite3 STATIC third_party/sqlite/sqlite3.c)
 target_include_directories(sqlite3 PUBLIC third_party/sqlite)
 if(WIN32)
     target_compile_definitions(sqlite3 PRIVATE SQLITE_OS_WIN=1)
+endif()
+
+# ---------------------------------------------------------------------------
+# openssl_shim：OpenSSL 1.1 -> 3.x ABI 兼容垫片（libssh 静态库依赖）
+# 仅在需要 Qt 全量编译时构建（Qt-less 子集不需要）。
+# ---------------------------------------------------------------------------
+if(Qt6_FOUND AND OPENSSL_FOUND)
+add_library(openssl_shim STATIC src/compat/openssl_shim.c)
+target_link_libraries(openssl_shim PUBLIC OpenSSL::Crypto)
+# 纯 C 桩库，不需要 Qt 元对象处理；显式关闭 AUTOMOC 避免触发 g++ 预处理开销
+set_target_properties(openssl_shim PROPERTIES
+    AUTOMOC OFF
+    AUTOUIC OFF
+    AUTORCC OFF
+)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -121,6 +160,8 @@ endif()
 # ---------------------------------------------------------------------------
 # 源文件
 # ---------------------------------------------------------------------------
+# 仅在 Qt6 找到时定义 COMMON_SOURCES（这些 .cpp 全部依赖 QtCore 或 QtWidgets），
+# 找不到 Qt 时只编纯 C 子集 + smoke 测试。
 set(COMMON_SOURCES
     resources/resources.qrc
     resources/app.rc
@@ -196,12 +237,12 @@ set(COMMON_SOURCES
 )
 
 # ---------------------------------------------------------------------------
-# bambooRat（含嵌入式 SQLite 配置存储）
+# bambooRat（含嵌入式 SQLite 配置存储）—— 需要 Qt6
 # ---------------------------------------------------------------------------
+if(TARGET Qt6::Widgets)
 add_executable(bambooRat WIN32
     ${COMMON_SOURCES}
     src/core/ConfigStore.cpp
-    src/compat/openssl_shim.c
 )
 target_include_directories(bambooRat PRIVATE src)
 target_include_directories(bambooRat PRIVATE "${LIBSSH_DIR}/include")
@@ -217,7 +258,9 @@ target_link_libraries(bambooRat PRIVATE
     Qt6::Gui
     Qt6::Core
     sqlite3
-    z
+    openssl_shim
+    # 注: libssh.a 是按 WITH_ZLIB=OFF 编译的，不引用 deflate/inflate/gz_*；
+    # Qt 6.12 自身又 QT_FEATURE_system_zlib=OFF，所以这里不再链接系统 zlib。
 )
 # libssh.a (static) 与 libcrypto.dll.a 之间存在循环引用：用 --start-group/--end-group
 # 让链接器反复扫描直到收敛；同一 group 内还需要 ws2_32 / crypt32 / iphlpapi 这些
@@ -239,10 +282,12 @@ target_link_libraries(bambooRat PRIVATE
     dwmapi
     "-Wl,--end-group"
 )
+endif() # /bambooRat
 
 # ---------------------------------------------------------------------------
-# verifykey: 手动密钥验证工具（验证 4.1.x 恢复的 passphrase）
+# verifykey: 手动密钥验证工具（验证 4.1.x 恢复的 passphrase）—— 需要 Qt6
 # ---------------------------------------------------------------------------
+if(TARGET Qt6::Core)
 add_executable(verifykey
     src/verifykey.cpp
     src/wechat/WeChatDb.cpp
@@ -256,10 +301,12 @@ target_link_libraries(verifykey PRIVATE
     OpenSSL::Crypto
     sqlite3
 )
+endif()
 
 # ---------------------------------------------------------------------------
-# keytest: 微信密钥提取端到端验证工具（临时，验证后删除）
+# keytest: 微信密钥提取端到端验证工具（临时，验证后删除）—— 需要 Qt6
 # ---------------------------------------------------------------------------
+if(TARGET Qt6::Core)
 add_executable(keytest
     src/keytest.cpp
     src/wechat/WeChatKeyExtractor.cpp
@@ -276,5 +323,14 @@ target_link_libraries(keytest PRIVATE
     crypt32
     psapi
 )
+endif()
+
+# ---------------------------------------------------------------------------
+# bamboo_toolchain_check: Qt-free 烟雾测试（验证 cmake+ninja+gcc 链 + sqlite3）
+#   不依赖 Qt / OpenSSL，作为 Qt-less 子集的主输出。装 Qt 之后仍可作为 bambooRat.exe 启动前的基础检查。
+# ---------------------------------------------------------------------------
+add_executable(bamboo_toolchain_check src/toolchain_check.cpp)
+target_include_directories(bamboo_toolchain_check PRIVATE src)
+target_link_libraries(bamboo_toolchain_check PRIVATE sqlite3)
 
 

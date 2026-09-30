@@ -281,7 +281,16 @@ void MainWindow::setupPages() {
     m_contentStack->addWidget(m_logs);
     m_contentStack->addWidget(m_about);
 
-    navigateTo("dashboard");
+    // 默认进入微信页（侧边栏调试用），通过 --start-page= 覆盖；不指定则微信
+    const QStringList args = QCoreApplication::arguments();
+    QString startPage = "wechat";
+    for (const auto& a : args) {
+        if (a.startsWith("--start-page=")) {
+            startPage = a.section('=', 1).trimmed();
+            break;
+        }
+    }
+    navigateTo(startPage);
 }
 
 void MainWindow::setupStatusBar() {

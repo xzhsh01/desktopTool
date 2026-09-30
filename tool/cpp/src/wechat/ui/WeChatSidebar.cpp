@@ -4,13 +4,17 @@
 #include "core/Logger.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QHBoxLayout>
 #include <QMap>
 #include <QMenu>
+#include <QPainter>
 #include <QPushButton>
 #include <QSet>
+#include <QStyledItemDelegate>
+#include <QTextDocument>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
@@ -36,6 +40,59 @@ QString labelFingerprint(const QVariantList& list) {
               QByteArray::number(list.size()));
     return QString::fromLatin1(h.result().toHex());
 }
+
+// 让 QTreeWidgetItem 的文本按 HTML 富文本渲染（默认按字面字符串画）
+// — 联系人 / 聊天分组右侧的"未读徽标"和"计数"都是 <span style=...> 内嵌 HTML，
+// QStyledItemDelegate 不会自动识别，必须用 QTextDocument 自己画。
+class HtmlItemDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter* p, const QStyleOptionViewItem& opt,
+               const QModelIndex& idx) const override {
+        QStyleOptionViewItem o = opt;
+        initStyleOption(&o, idx);
+
+        const QString html = idx.data(Qt::DisplayRole).toString();
+
+        // 1) 画背景/选中/hover —— 用独立的 bgOpt，避免污染原始 o.text
+        //    （关键：直接调 QStyledItemDelegate::paint 会再次 initStyleOption，
+        //    把刚 clear 的文本又读回 o.text，导致原文盖在 HTML 之上）
+        QStyleOptionViewItem bgOpt = o;
+        bgOpt.text.clear();
+        QWidget* widget = const_cast<QWidget*>(bgOpt.widget);
+        QStyle* style = widget ? widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &bgOpt, p, widget);
+
+        if (html.isEmpty()) return;
+
+        // 2) 用 QTextDocument 渲染 HTML
+        QTextDocument doc;
+        doc.setDefaultFont(o.font);
+        doc.setHtml(html);
+
+        const QRect r = o.rect.adjusted(8, 1, -8, -1);
+        const QSizeF docSize = doc.size();
+        p->save();
+        p->setClipRect(r);
+        p->translate(r.left(), r.top() + qMax(0.0, (r.height() - docSize.height()) / 2.0));
+        doc.setTextWidth(qMax<qreal>(r.width(), docSize.width()));
+        doc.drawContents(p);
+        p->restore();
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem& opt,
+                   const QModelIndex& idx) const override {
+        const QString html = idx.data(Qt::DisplayRole).toString();
+        if (!html.contains('<')) {
+            return QStyledItemDelegate::sizeHint(opt, idx);
+        }
+        QTextDocument doc;
+        doc.setDefaultFont(opt.font);
+        doc.setHtml(html);
+        return QSize(qCeil(doc.idealWidth()) + 16, qMax(qCeil(doc.size().height()) + 4, 28));
+    }
+};
+
 } // namespace
 
 WeChatSidebar::WeChatSidebar(QWidget* parent) : QWidget(parent) {
@@ -78,17 +135,19 @@ void WeChatSidebar::buildUi() {
     m_tree->setHeaderHidden(true);
     // 注意：不能 setRootIsDecorated(false)，否则 Qt 会把 top-level 当作叶子处理，
     // 即使 setExpanded(true) 也不会渲染子节点。
-    // 改为用 stylesheet 隐藏 branch（连接线 + 箭头）
     m_tree->setRootIsDecorated(true);
     m_tree->setExpandsOnDoubleClick(false);       // 单击触发
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_tree->setMinimumWidth(200);
     m_tree->setIndentation(14);
-    m_tree->setUniformRowHeights(true);           // 行数少但仍开启，避免将来扩展时跳变
+    m_tree->setUniformRowHeights(false);          // 关键：true 在 Qt 6.12 + branch CSS 下会吞掉 children 行高
     m_tree->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_tree->setItemDelegate(new HtmlItemDelegate(m_tree));  // 让分组头按 HTML 富文本渲染
 
     // ── 三态视觉：hover / pressed / selected，都给明确反馈 ──
     // 关键：branch 透明避免根的连接线泄露；item 留白 + 圆角模拟"卡片"
+    // 注意：不要在 branch 上用 border-image:none —— Qt 6.12 会把它连同 children 的缩进一并折叠掉，
+    // 导致子节点根本不被绘制。改为只设 background:transparent。
     m_tree->setStyleSheet(QString(
         "QTreeWidget{background:%1;border:1px solid %2;outline:0;color:%3;}"
         "QTreeWidget::item{height:32px;border-radius:6px;margin:1px 4px;"
@@ -97,14 +156,7 @@ void WeChatSidebar::buildUi() {
         "QTreeWidget::item:pressed{background:%5;}"
         "QTreeWidget::item:selected{background:%6;color:%7;font-weight:600;}"
         "QTreeWidget::item:selected:hover{background:%8;}"
-        "QTreeWidget::branch{background:transparent;border-image:none;}"
-        "QTreeWidget::branch:has-siblings:!adjoins-item{border-image:none;}"
-        "QTreeWidget::branch:has-siblings:adjoins-item{border-image:none;}"
-        "QTreeWidget::branch:!has-children:!has-siblings:adjoins-item{border-image:none;}"
-        "QTreeWidget::branch:has-children:!has-siblings:closed,"
-        "QTreeWidget::branch:closed:has-children:has-siblings{border-image:none;}"
-        "QTreeWidget::branch:open:has-children:!has-siblings,"
-        "QTreeWidget::branch:open:has-children:has-siblings{border-image:none;}")
+        "QTreeWidget::branch{background:transparent;}")
         .arg(Theme::kBg, Theme::kBorder, Theme::kText,
              Theme::kSurface,         // hover
              Theme::kBorder,          // pressed
@@ -130,7 +182,12 @@ QString WeChatSidebar::currentAccountId() const {
 void WeChatSidebar::selectAccount(const QString& accId) {
     if (!m_tree || accId.isEmpty()) return;
     auto* it = findAccountItem(accId);
-    if (it) m_tree->setCurrentItem(it);
+    if (!it) return;
+    m_tree->setCurrentItem(it);
+    // 选中时强制展开，确保右侧缩进区里的 👥 联系人 / 💬 聊天 + 徽标 都被绘制。
+    m_tree->expandItem(it);
+    if (it->childCount() > 0) m_tree->setCurrentItem(it->child(0));
+    m_tree->expandItem(it);
 }
 
 void WeChatSidebar::rebuildTree(const QString& selectAccId) {
@@ -138,7 +195,6 @@ void WeChatSidebar::rebuildTree(const QString& selectAccId) {
     const QString prevSel = currentAccountId();
     const QString target = !selectAccId.isEmpty() ? selectAccId : prevSel;
 
-    m_tree->blockSignals(true);
     m_tree->clear();
 
     Logger::instance().info(QString("[sidebar] rebuildTree: accounts=%1").arg(WeChatAccountManager::instance().accounts().size()), "wechat");
@@ -157,21 +213,28 @@ void WeChatSidebar::rebuildTree(const QString& selectAccId) {
         chatGroup->setText(0, buildChatLabel(m_sessionsByAcc.value(a.id)));
         accItem->addChild(chatGroup);
 
-        // 关键：必须先 addChild 再 setExpanded(true)
-        // —— 在没有 child 时调用 setExpanded(true) 会被 Qt 忽略
-        accItem->setExpanded(true);
-
-        Logger::instance().info(QString("[sidebar] account '%1': childCount=%2, expanded=%3, topLevel=%4, total=%5")
-            .arg(a.name).arg(accItem->childCount()).arg(accItem->isExpanded()?1:0)
-            .arg(m_tree->topLevelItemCount()).arg(m_tree->model()->rowCount()), "wechat");
+        // 诊断：把 children 的 visualItemRect 也打出来，方便定位"加了但不画"的问题
+        QRect accRect = m_tree->visualItemRect(accItem);
+        QRect cRect   = m_tree->visualItemRect(contactGroup);
+        QRect chRect  = m_tree->visualItemRect(chatGroup);
+        Logger::instance().info(QString("[sidebar] account '%1': childCount=%2, accRect=%3,%4 %5x%6, contactRect=%7,%8 %9x%10, chatRect=%11,%12 %13x%14")
+            .arg(a.name).arg(accItem->childCount())
+            .arg(accRect.x()).arg(accRect.y()).arg(accRect.width()).arg(accRect.height())
+            .arg(cRect.x()).arg(cRect.y()).arg(cRect.width()).arg(cRect.height())
+            .arg(chRect.x()).arg(chRect.y()).arg(chRect.width()).arg(chRect.height()),
+            "wechat");
     }
-    m_tree->blockSignals(false);
 
-    // 兜底：在 blockSignals 之外再调一次 expand()，确保子节点在样式/选择模型稳定后被绘制
+    // 用 QTreeWidget 的公开 expandItem API 展开每个账号根，
+    // 绕过 setExpanded 在 Qt 6.12 下与 stylesheet + DontShowIndicator 组合时的不可靠行为。
     for (int i = 0; i < m_tree->topLevelItemCount(); ++i) {
-        auto* it = m_tree->topLevelItem(i);
-        if (it && it->childCount() > 0) it->setExpanded(true);
+        m_tree->expandItem(m_tree->topLevelItem(i));
     }
+    // 最终兜底：force expandAll，确保右侧缩进的分组头（联系人/聊天 + 徽标）真的被绘制。
+    m_tree->expandAll();
+    // 强制刷新 viewport，绕过 Qt 6.12 偶发的"model 已更新但 view 不重绘"问题
+    m_tree->viewport()->update();
+    m_tree->update();
 
     if (!target.isEmpty()) selectAccount(target);
 }
@@ -186,13 +249,11 @@ QTreeWidgetItem* WeChatSidebar::makeAccountItem(const QString& accId,
     QFont f = it->font(0);
     f.setBold(true);
     it->setFont(0, f);
-    // 注意：不要在这里 setExpanded(true)！Qt 在没有 child 时不会保持展开状态。
-    // 必须在 addChild 之后再 setExpanded(true)，由 rebuildTree 负责调用。
-    it->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicator); // 不画展开箭头
-    // 关键：必须保留 ItemIsSelectable —— Qt 6 在父节点缺少可点击态且隐藏分支指示符时，
-    // 子节点有时不会被绘制。点击命中由 onTreeItemClicked 内 NodeType 分发去忽略，
-    // 不影响"账号根不可被选中"的语义。
-    it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+    // 关键修复：不要用 setChildIndicatorPolicy(DontShowIndicator) —— Qt 6.12 下这会让
+    // QTreeView 把 top-level 当作 header 节点不画 children。改用 ItemFlag 控制：
+    //   - 不给 ItemIsSelectable（账号根只是容器，不接收点击）
+    //   - 保留 ItemIsEnabled 让它正常渲染 + 子节点能显示
+    it->setFlags(Qt::ItemIsEnabled);
     return it;
 }
 
