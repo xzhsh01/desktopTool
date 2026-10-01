@@ -397,8 +397,16 @@ QList<QVariantList> runQuery(const QString& dbPath, const QString& sql,
                     case SQLITE_INTEGER: row << qint64(sqlite3_column_int64(stmt, c)); break;
                     case SQLITE_FLOAT:   row << sqlite3_column_double(stmt, c);       break;
                     case SQLITE_NULL:   row << QVariant();                           break;
+                    case SQLITE_BLOB: {
+                        // 二进制 BLOB（如 4.x packed_info_data）必须按字节保留
+                        // 绝不能走 QString::fromUtf8，否则高字节会损坏导致 hex md5 提取不出来。
+                        const char* data = static_cast<const char*>(sqlite3_column_blob(stmt, c));
+                        const int n = sqlite3_column_bytes(stmt, c);
+                        row << QByteArray(data, n);
+                        break;
+                    }
                     default: {
-                        // TEXT/BLOB 统一按原始字节读取（zstd 压缩内容打标记）
+                        // TEXT：按原始字节读取，zstd 压缩内容打标记
                         const char* data = static_cast<const char*>(sqlite3_column_blob(stmt, c));
                         const int n = sqlite3_column_bytes(stmt, c);
                         if (n >= 4 && memcmp(data, kZstdMagic, 4) == 0)

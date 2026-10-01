@@ -22,7 +22,7 @@ Settings::Settings(QObject* parent) : QObject(parent) {
 
 QVariantMap Settings::defaults() const {
     return {
-        {"minimizeToTray", true},
+        {"minimizeToTray", false},
         {"theme", "dark"},
         {"language", "zh-CN"},
         {"connectTimeout", 30},

@@ -162,12 +162,13 @@ void WeChatSidebar::buildUi() {
     connect(addBtn, &QPushButton::clicked, this, &WeChatSidebar::onAddClicked);
     topBtnRow->addWidget(addBtn, 1);
 
-    auto* refreshBtn = new QPushButton(QStringLiteral("↻"));
+    auto* refreshBtn = new QPushButton(QStringLiteral("\u21BB"));
     refreshBtn->setCursor(Qt::PointingHandCursor);
-    refreshBtn->setToolTip(QStringLiteral("刷新当前账号"));
+    refreshBtn->setToolTip(QStringLiteral("\xe7\xab\x8b\xe5\x8d\xb3\xe5\x90\x8c\xe6\xad\xa5\xe5\xbd\x93\xe5\x89\x8d\xe8\xb4\xa6\xe5\x8f\xb7\xe7\x9a\x84\xe4\xbc\x9a\xe8\xaf\x9d\xe3\x80\x81\xe8\x81\x94\xe7\xb3\xbb\xe4\xba\xba\xe3\x80\x81\xe6\xb6\x88\xe6\x81\xaf"));
+    refreshBtn->setFixedWidth(36);
     refreshBtn->setStyleSheet(QStringLiteral(
         "QPushButton { background: %1; color: %2; border: none;"
-        " padding: 4px 10px; font-size: 16px; border-radius: 3px; }"
+        " padding: 4px 10px; font-size: 12px; border-radius: 3px; }"
         "QPushButton:hover    { background: %3; }"
         "QPushButton:pressed  { background: %4; }"
         "QPushButton:disabled { background: %1; color: %5; }")

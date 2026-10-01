@@ -175,26 +175,33 @@ void CacheDb::parseAttachMeta(int type, int subType,
     }
 
     // 非 XML 类型，但有明确语义 → 给个扩展名（便于 UI 显示）
+    // 注意：WeChatSyncWorker 调用本函数前已经从 packed_info_data（4.x）得到 md5。
+    // 4.x 的 message_content 是 zstd 压缩，本函数 XML 解析只会返回空，会覆盖正确的 md5。
+    // 这里只填空值。
+    auto setIfEmpty = [&](const char* k, const QString& v) {
+        if (m.value(QString::fromLatin1(k)).toString().isEmpty() && !v.isEmpty())
+            m[k] = v;
+    };
     switch (type) {
     case 3:
         m["attachExt"]  = "image";
         m["attachMime"] = "image";
-        m["attachMd5"]  = extractImageMd5FromXml(content);
+        setIfEmpty("attachMd5", extractImageMd5FromXml(content));
         break;
     case 34:
         m["attachExt"]  = "voice";
         m["attachMime"] = "voice";
-        m["attachMd5"]  = extractFileMd5FromXml(content);
+        setIfEmpty("attachMd5", extractFileMd5FromXml(content));
         break;
     case 43:
         m["attachExt"]  = "video";
         m["attachMime"] = "video";
-        m["attachMd5"]  = extractFileMd5FromXml(content);
+        setIfEmpty("attachMd5", extractFileMd5FromXml(content));
         break;
     case 47:
         m["attachExt"]  = "gif";
         m["attachMime"] = "gif";
-        m["attachMd5"]  = extractImageMd5FromXml(content);
+        setIfEmpty("attachMd5", extractImageMd5FromXml(content));
         break;
     case 48:
         m["attachExt"]  = "loc";
