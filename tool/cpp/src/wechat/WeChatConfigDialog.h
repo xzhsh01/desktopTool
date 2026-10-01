@@ -40,6 +40,7 @@ private slots:
     void testKey();
     void extractKey();
     void extractImageKey();
+    void verifyImageKey();
     void onScanProgress(const QString& msg);
     void onScanExtractDone();
     void onExtractKeyDone(const QString& key, const QString& err);
@@ -62,9 +63,11 @@ private:
     QComboBox* m_versionCombo = nullptr;
     QListWidget* m_scanList = nullptr;
     QLabel* m_hintLabel = nullptr;
+    QLabel* m_imageHintLabel = nullptr;  // 图片密钥提示（放在图片密钥输入框下方）
     QPushButton* m_testBtn = nullptr;
     QPushButton* m_extractBtn = nullptr;
     QPushButton* m_extractImageKeyBtn = nullptr;
+    QPushButton* m_verifyImageKeyBtn = nullptr;
     QMap<QString, QString> m_scanKeys;  // 扫描提取的密钥：wxid → keyHex
 
     // 后台密钥提取（避免 50+ 候选 × 多账号 verifyKey 在主线程阻塞 UI）

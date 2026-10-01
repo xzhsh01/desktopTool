@@ -1,6 +1,7 @@
 #include "WeChatConfigDialog.h"
 #include "WeChatAccountManager.h"
 #include "WeChatDb.h"
+#include "WeChatImageDecoder.h"
 #include "WeChatKeyExtractor.h"
 #include "WeChatWorker.h"
 #include "app/Theme.h"
@@ -25,10 +26,35 @@
 #include <QFile>
 #include <QPointer>
 #include <QThread>
+#include <QToolButton>
 #include <thread>
 #include <atomic>
 
 using Account = WeChatAccountManager::Account;
+
+// 生成一个小眼睛切换按钮：点击切换 QLineEdit 的 Password/Normal 显示
+static QToolButton* makeEyeButton(QLineEdit* edit) {
+    auto* eye = new QToolButton(edit);
+    eye->setText(QStringLiteral("👁"));
+    eye->setToolTip(QStringLiteral("显示/隐藏明文"));
+    eye->setCheckable(true);
+    eye->setCursor(Qt::PointingHandCursor);
+    eye->setFocusPolicy(Qt::NoFocus);
+    eye->setFixedSize(34, 28);
+    // 独立按钮外观：背景 + 边框，与输入框区分开；
+    // 选中（明文显示）时用主题强调色高亮，状态一目了然。
+    eye->setStyleSheet(QString(
+        "QToolButton{background:%1;border:1px solid %2;border-radius:4px;"
+        "font-size:14px;color:%3;}"
+        "QToolButton:hover{border-color:%4;color:%5;}"
+        "QToolButton:checked{background:%4;border-color:%4;color:%6;}")
+        .arg(Theme::kSurfaceAlt, Theme::kBorder, Theme::kMuted,
+             Theme::kAccent, Theme::kTextBright, Theme::kTextBright));
+    QObject::connect(eye, &QToolButton::toggled, edit, [edit](bool on) {
+        edit->setEchoMode(on ? QLineEdit::Normal : QLineEdit::Password);
+    });
+    return eye;
+}
 
 WeChatConfigDialog::WeChatConfigDialog(QWidget* parent, const QString& editId)
     : QDialog(parent), m_editId(editId) {
@@ -132,7 +158,11 @@ void WeChatConfigDialog::buildUi() {
     m_keyEdit = new QLineEdit;
     m_keyEdit->setPlaceholderText("64 位十六进制数据库密钥（登录微信后可自动提取）");
     m_keyEdit->setEchoMode(QLineEdit::Password);
-    form->addRow("数据库密钥:", m_keyEdit);
+    auto* keyEditRow = new QHBoxLayout;
+    keyEditRow->setContentsMargins(0, 0, 0, 0);
+    keyEditRow->addWidget(m_keyEdit, 1);
+    keyEditRow->addWidget(makeEyeButton(m_keyEdit));
+    form->addRow("数据库密钥:", keyEditRow);
 
     auto* keyRow = new QHBoxLayout;
     m_extractBtn = new QPushButton("从微信自动提取");
@@ -152,7 +182,11 @@ void WeChatConfigDialog::buildUi() {
     m_imageKeyEdit = new QLineEdit;
     m_imageKeyEdit->setPlaceholderText("32 位十六进制图片密钥（V2 .dat 解密；登录微信后可自动提取）");
     m_imageKeyEdit->setEchoMode(QLineEdit::Password);
-    form->addRow("图片密钥:", m_imageKeyEdit);
+    auto* imgKeyEditRow = new QHBoxLayout;
+    imgKeyEditRow->setContentsMargins(0, 0, 0, 0);
+    imgKeyEditRow->addWidget(m_imageKeyEdit, 1);
+    imgKeyEditRow->addWidget(makeEyeButton(m_imageKeyEdit));
+    form->addRow("图片密钥:", imgKeyEditRow);
 
     auto* imgKeyRow = new QHBoxLayout;
     m_extractImageKeyBtn = new QPushButton("从微信自动提取");
@@ -160,8 +194,20 @@ void WeChatConfigDialog::buildUi() {
     connect(m_extractImageKeyBtn, &QPushButton::clicked,
             this, &WeChatConfigDialog::extractImageKey);
     imgKeyRow->addWidget(m_extractImageKeyBtn);
+    m_verifyImageKeyBtn = new QPushButton("验证");
+    m_verifyImageKeyBtn->setObjectName("secondaryBtn");
+    m_verifyImageKeyBtn->setToolTip("用当前图片密钥试解密一张 .dat，验证密钥是否正确");
+    connect(m_verifyImageKeyBtn, &QPushButton::clicked,
+            this, &WeChatConfigDialog::verifyImageKey);
+    imgKeyRow->addWidget(m_verifyImageKeyBtn);
     imgKeyRow->addStretch(1);
     form->addRow("", imgKeyRow);
+
+    // 图片密钥提示（放在图片密钥下方，与数据库密钥提示分开）
+    m_imageHintLabel = new QLabel;
+    m_imageHintLabel->setStyleSheet(Theme::mutedText());
+    m_imageHintLabel->setWordWrap(true);
+    form->addRow("", m_imageHintLabel);
 
     root->addLayout(form, 1);
 
@@ -205,11 +251,10 @@ void WeChatConfigDialog::buildUi() {
                                   "请填写数据库密钥；微信登录状态下可点「从微信自动提取」");
             return;
         }
-        // 编辑模式必须提供新密钥（防止改坏原密钥）
+        // 编辑模式：密钥已自动带出，若被清空则要求重新填写
         if (!m_editId.isEmpty() && key.isEmpty()) {
             QMessageBox::warning(this, "微信账号",
-                                  "编辑账号必须填写数据库密钥；"
-                                  "如不知道原密钥，请删除账号后重新添加");
+                                  "数据库密钥为空；可点「从微信自动提取」重新获取");
             return;
         }
 
@@ -514,19 +559,19 @@ QString WeChatConfigDialog::pickOracleDat(const QString& dataDir) {
 void WeChatConfigDialog::extractImageKey() {
     const QString dir = m_dirEdit->text().trimmed();
     if (dir.isEmpty() || !QFile::exists(dir)) {
-        m_hintLabel->setText("请先填写数据目录");
-        m_hintLabel->setStyleSheet(Theme::statusWarn());
+        m_imageHintLabel->setText("请先填写数据目录");
+        m_imageHintLabel->setStyleSheet(Theme::statusWarn());
         return;
     }
     const QString oracle = pickOracleDat(dir);
     if (oracle.isEmpty()) {
-        m_hintLabel->setText(QStringLiteral("数据目录下未找到 V2 .dat 图片（%1/msg/attach/.../Img/*.dat）")
+        m_imageHintLabel->setText(QStringLiteral("数据目录下未找到 V2 .dat 图片（%1/msg/attach/.../Img/*.dat）")
             .arg(dir));
-        m_hintLabel->setStyleSheet(Theme::statusWarn());
+        m_imageHintLabel->setStyleSheet(Theme::statusWarn());
         return;
     }
-    m_hintLabel->setStyleSheet(Theme::mutedText());
-    m_hintLabel->setText(QStringLiteral("正在从微信进程提取图片 AES key（oracle=%1）…").arg(oracle));
+    m_imageHintLabel->setStyleSheet(Theme::mutedText());
+    m_imageHintLabel->setText(QStringLiteral("正在从微信进程提取图片 AES key（oracle=%1）…").arg(oracle));
     QApplication::setOverrideCursor(Qt::WaitCursor);
     m_extractImageKeyBtn->setEnabled(false);
     QMetaObject::invokeMethod(m_extractWorker, "extractImageKey",
@@ -539,12 +584,52 @@ void WeChatConfigDialog::onExtractImageKeyDone(const QString& key16Hex, const QS
     m_extractImageKeyBtn->setEnabled(true);
     if (!key16Hex.isEmpty()) {
         m_imageKeyEdit->setText(key16Hex);
-        m_hintLabel->setText("图片 key 提取成功 ✓");
-        m_hintLabel->setStyleSheet(Theme::statusOk());
+        m_imageHintLabel->setText("图片 key 提取成功 ✓（可点「验证」确认能解开 .dat）");
+        m_imageHintLabel->setStyleSheet(Theme::statusOk());
     } else {
-        m_hintLabel->setText(QStringLiteral("图片 key 提取失败：%1")
+        m_imageHintLabel->setText(QStringLiteral("图片 key 提取失败：%1")
             .arg(err.isEmpty() ? QStringLiteral("未知错误") : err));
-        m_hintLabel->setStyleSheet(Theme::statusErr());
+        m_imageHintLabel->setStyleSheet(Theme::statusErr());
+    }
+}
+
+void WeChatConfigDialog::verifyImageKey() {
+    const QString keyHex = m_imageKeyEdit->text().trimmed();
+    if (keyHex.size() != 32) {
+        m_imageHintLabel->setText("图片密钥格式错误：需要 32 位十六进制字符串（16 字节）");
+        m_imageHintLabel->setStyleSheet(Theme::statusErr());
+        return;
+    }
+    const QString dir = m_dirEdit->text().trimmed();
+    const QString oracle = pickOracleDat(dir);
+    if (oracle.isEmpty()) {
+        m_imageHintLabel->setText("数据目录下未找到 V2 .dat 图片，无法验证");
+        m_imageHintLabel->setStyleSheet(Theme::statusWarn());
+        return;
+    }
+    QFile f(oracle);
+    if (!f.open(QIODevice::ReadOnly)) {
+        m_imageHintLabel->setText("打开 oracle .dat 失败：" + f.errorString());
+        m_imageHintLabel->setStyleSheet(Theme::statusErr());
+        return;
+    }
+    const QByteArray dat = f.readAll();
+    f.close();
+    const QByteArray key16 = QByteArray::fromHex(keyHex.toLatin1());
+    QString err;
+    WeChatImageDecoder::Format fmt = WeChatImageDecoder::Format::Unknown;
+    const QByteArray plain = WeChatImageDecoder::decryptV2(dat, key16, &fmt, &err);
+    if (!plain.isEmpty() && fmt != WeChatImageDecoder::Format::Unknown) {
+        m_imageHintLabel->setText(
+            QStringLiteral("图片密钥验证通过 ✓（解出 %1，%2 字节）")
+                .arg(WeChatImageDecoder::formatExtension(fmt))
+                .arg(plain.size()));
+        m_imageHintLabel->setStyleSheet(Theme::statusOk());
+    } else {
+        m_imageHintLabel->setText(
+            QStringLiteral("图片密钥验证失败：%1")
+                .arg(err.isEmpty() ? QStringLiteral("解密结果不是有效图片") : err));
+        m_imageHintLabel->setStyleSheet(Theme::statusErr());
     }
 }
 
@@ -556,8 +641,10 @@ void WeChatConfigDialog::loadAccount() {
     m_dirEdit->setText(acc->dataDir);
     const int idx = m_versionCombo->findData(acc->version);
     if (idx >= 0) m_versionCombo->setCurrentIndex(idx);
-    // 编辑模式：密钥不回显（避免误改），但保存时强制要求重新填写
-    m_keyEdit->setPlaceholderText("必填：重新填写 64 位十六进制数据库密钥");
-    // 图片 key：可回显（提取难度更高，丢了可惜；并且是非敏感字段）
+    // 编辑模式：带出已保存的密钥（DPAPI 解密后的明文 hex）。
+    // 输入框为 Password 模式（默认掩码），点小眼睛可查看明文。
+    const QString plainKey = WeChatAccountManager::instance().keyForAccount(*acc);
+    m_keyEdit->setText(plainKey);
+    m_keyEdit->setPlaceholderText("64 位十六进制数据库密钥");
     m_imageKeyEdit->setText(acc->imageKeyHex);
 }
