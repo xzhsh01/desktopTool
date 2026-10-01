@@ -488,6 +488,64 @@ static inline bool aesEcbDecryptBlock(const unsigned char key[16],
 // oraclePath 必须是从 WeChatConfigDialog 传进来的真实 .dat（已知是某张图）。
 // 返回 true 表示 key 真的能解出 oracle 的全部密文（首块是图片 magic + body 整体合理）。
 static bool looksLikeImagePlain(const unsigned char p[16]);  // forward decl
+
+// 在指定 offset 处用 EVP 解密前 N 块，验证首块像图片 magic。
+// 返回 true 表示该 offset 解密有效。
+static bool tryOffsetVerify(const unsigned char key[16],
+                            const QByteArray& dat, int offset) {
+    const int cipherLen = dat.size() - offset;
+    if (cipherLen < 32) return false;
+    // 截断到 16 的倍数（.dat 末尾可能有 1~15 字节截断）
+    const int aligned = cipherLen - (cipherLen % 16);
+    if (aligned < 32) return false;
+    // 只解密前 4KB（足够判断 + 省时）
+    const int sampleLen = qMin(aligned, 4096);
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return false;
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_128_ecb(), nullptr, key, nullptr) != 1) {
+        EVP_CIPHER_CTX_free(ctx); return false;
+    }
+    EVP_CIPHER_CTX_set_padding(ctx, 0);
+    QByteArray plain(sampleLen + 16, '\0');
+    int outLen = 0;
+    const unsigned char* inPtr = reinterpret_cast<const unsigned char*>(dat.constData() + offset);
+    unsigned char* outPtr = reinterpret_cast<unsigned char*>(plain.data());
+    bool ok = true;
+    if (EVP_DecryptUpdate(ctx, outPtr, &outLen, inPtr, sampleLen) != 1) {
+        ok = false;
+    }
+    EVP_CIPHER_CTX_free(ctx);
+    if (!ok || outLen < 32) return false;
+    plain.resize(outLen);
+
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(plain.constData());
+    // 首块必须像图片 magic
+    if (!looksLikeImagePlain(p)) return false;
+
+    // 次块必须不全 0 / 不全 FF（排除假阳性双块相同模式）
+    bool allZero = true, allFF = true;
+    for (int i = 16; i < 32; ++i) {
+        if (p[i] != 0x00) allZero = false;
+        if (p[i] != 0xFF) allFF = false;
+    }
+    if (allZero || allFF) return false;
+
+    // JPEG 头 ff d8 ff ??：在前 4KB 内必须出现至少一个 0xFF 0x?? marker
+    // （JPEG 数据流中段经常含 marker，全 4KB 无 0xFF 的 JPEG 几乎不存在）
+    if (p[0] == 0xFF && p[1] == 0xD8) {
+        int ffCount = 0;
+        for (int i = 32; i + 1 < outLen; ++i) {
+            if (p[i] == 0xFF && p[i + 1] != 0x00) {
+                ++ffCount;
+                if (ffCount >= 2) break;
+            }
+        }
+        if (ffCount < 1) return false;
+    }
+    return true;
+}
+
 static bool verifyKeyByFullOracle(const unsigned char key[16],
                                   const QString& oraclePath) {
     if (oraclePath.isEmpty()) return false;
@@ -495,84 +553,18 @@ static bool verifyKeyByFullOracle(const unsigned char key[16],
     if (!f.open(QIODevice::ReadOnly)) return false;
     const QByteArray dat = f.readAll();
     f.close();
-    // .dat 文件：magic(6) + reserved(9) + body
-    constexpr int kHeader = 15;
-    if (dat.size() <= kHeader + 32) return false;
+    if (dat.size() <= 47) return false;
     if ((unsigned char)dat[0] != 0x07 || (unsigned char)dat[1] != 0x08 ||
         (unsigned char)dat[2] != 'V'  || (unsigned char)dat[3] != '2') return false;
 
-    const int cipherLen = dat.size() - kHeader;
-    if (cipherLen <= 0) return false;
-
-    // 用 EVP 解密整个 body
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) return false;
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_128_ecb(), nullptr, key, nullptr) != 1) {
-        EVP_CIPHER_CTX_free(ctx); return false;
+    // V2 密文起点不确定是 15 还是 16（decryptV2 自己也两种都试）。两种都验证。
+    bool ok = tryOffsetVerify(key, dat, 15) || tryOffsetVerify(key, dat, 16);
+    if (ok) {
+        Logger::instance().info(
+            QString("verifyKeyByFullOracle: OK oracle=%1").arg(oraclePath),
+            "wechat.key");
     }
-    EVP_CIPHER_CTX_set_padding(ctx, 0);
-    QByteArray plain(cipherLen + 32, '\0');
-    int outLen = 0, finalLen = 0;
-    const unsigned char* inPtr = reinterpret_cast<const unsigned char*>(dat.constData() + kHeader);
-    unsigned char* outPtr = reinterpret_cast<unsigned char*>(plain.data());
-    bool ok = true;
-    if (EVP_DecryptUpdate(ctx, outPtr, &outLen, inPtr, cipherLen) != 1) {
-        ok = false;
-    } else {
-        finalLen = outLen;
-        if (EVP_DecryptFinal_ex(ctx, outPtr + outLen, &outLen) != 1) {
-            ok = false;
-        } else {
-            finalLen += outLen;
-        }
-    }
-    EVP_CIPHER_CTX_free(ctx);
-    if (!ok || finalLen < 32) return false;
-    plain.resize(finalLen);
-    const unsigned char* p = reinterpret_cast<const unsigned char*>(plain.constData());
-
-    // 1) 首块必须像图片 magic
-    if (!looksLikeImagePlain(p)) return false;
-
-    // 2) body 整体合理性：JPEG 头 16 字节里必须含 JFIF 或 Exif 标志
-    //    大部分微信图片都是 JFIF/Exif，少部分是纯 DQT/DHT 开头的 progressive JPEG
-    //    要求至少含一个 0xFF 字节（几乎所有图片首 32 字节都满足）
-    bool hasFF = false;
-    for (int i = 0; i < 16; ++i) {
-        if (p[i] == 0xFF) { hasFF = true; break; }
-    }
-    if (!hasFF) return false;
-
-    // 3) 首 64 字节里出现 JFIF / Exif / IHDR / GIF8 / RIFF 至少一个
-    const QByteArray head(reinterpret_cast<const char*>(p), qMin(64, plain.size()));
-    if (!head.contains("JFIF") && !head.contains("Exif") &&
-        !head.contains("IHDR") && !head.contains("GIF8") &&
-        !head.contains("RIFF")) {
-        return false;
-    }
-
-    // 4) 找 EOI/PNG IEND：JPEG 在前 4KB 内通常含 FF D9；PNG IEND = 49 45 4E 44 AE 42 60 82
-    //    失败不直接 return false（progressive JPEG 可能很迟才到 EOI），但加上能进一步压假阳性
-    const int searchMax = qMin(plain.size(), 4096);
-    if (head.startsWith(QByteArray::fromHex("FFD8FF"))) {
-        // JPEG：在前 4KB 内必须有 FF D9
-        bool hasEOI = false;
-        for (int i = 16; i + 1 < searchMax; ++i) {
-            if ((unsigned char)p[i] == 0xFF && (unsigned char)p[i + 1] == 0xD9) {
-                hasEOI = true; break;
-            }
-        }
-        if (!hasEOI) return false;
-    } else if (head.startsWith(QByteArray::fromHex("89504E47"))) {
-        // PNG：必须含 IEND chunk
-        if (!plain.contains(QByteArray::fromHex("49454E44AE426082"))) return false;
-    }
-
-    Logger::instance().info(
-        QString("verifyKeyByFullOracle: OK oracle=%1 plainSize=%2")
-            .arg(oraclePath).arg(plain.size()),
-        "wechat.key");
-    return true;
+    return ok;
 }
 
 // 判断 16 字节明文是否像图片 magic（严格版：要求 4+ 字节特征 + 合理字段）
