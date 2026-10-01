@@ -83,9 +83,12 @@ static QString xmlAttr(const QString& xml, const QString& attr) {
 QString CacheDb::extractImageMd5FromXml(const QString& xml) {
     if (xml.isEmpty()) return {};
     static const char* attrs[] = {"md5", "midimgmd5", "cdnmidimgmd5", "cdnthumbmd5", nullptr};
+    static const QRegularExpression hex32(QStringLiteral("^[0-9a-fA-F]{32}$"));
     for (int i = 0; attrs[i]; ++i) {
         const QString v = xmlAttr(xml, QString::fromLatin1(attrs[i]));
-        if (v.size() == 32 && v.contains(QRegularExpression(QStringLiteral("^[0-9a-fA-F]{32}$"))))
+        // size()==32 且是 32 字符 hex → 视为 md5
+        // 用 exactMatch 而不是 contains(QRegularExpression) —— 后者即使带 ^/$ 也不会"全文匹配"
+        if (v.size() == 32 && hex32.match(v).hasMatch())
             return v.toLower();
     }
     return {};

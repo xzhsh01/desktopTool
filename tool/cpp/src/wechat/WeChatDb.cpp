@@ -645,6 +645,22 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
                 if (m.type == 3 || m.type == 47) {
                     m.attachMd5 = extractImageMd5FromPacked(packed);
                 }
+                // 诊断：每条 type=3/47 消息的提取结果（每 session 只打 1 条）
+                if ((m.type == 3 || m.type == 47) && zstdRawBySid.contains(m.msgId) == false
+                    && m.type == 47) {
+                    static int s_logN = 0;
+                    if (s_logN < 3) {
+                        ++s_logN;
+                        qInfo().noquote()
+                            << QStringLiteral("[wechat.db][emoji.diag] sid=%1 type=%2 packed=%3B zstdSid=%4 content.isZstdMark=%5 contentLen=%6 packedMd5=%7")
+                                .arg(m.msgId).arg(m.type)
+                                .arg(packed.size())
+                                .arg(zstdRawBySid.contains(m.msgId) ? "yes" : "NO")
+                                .arg(content == kZstdMark ? "yes" : "no")
+                                .arg(content.size())
+                                .arg(m.attachMd5.isEmpty() ? "<empty>" : m.attachMd5);
+                    }
+                }
                 if (m.type == 47 && m.attachMd5.isEmpty()
                     && content == kZstdMark
                     && zstdRawBySid.contains(m.msgId)) {
