@@ -373,6 +373,24 @@ target_link_libraries(zstd_test PRIVATE
 endif()
 
 # ---------------------------------------------------------------------------
+# verifykey_real: 用给定 keyHex 尝试解密 .dat，验证 key 是否有效 (临时)
+# ---------------------------------------------------------------------------
+if(TARGET Qt6::Core)
+add_executable(verifykey_real
+    src/verifykey_real.cpp
+    src/wechat/WeChatImageDecoder.cpp
+    src/core/Logger.cpp
+    src/core/Settings.cpp
+)
+target_include_directories(verifykey_real PRIVATE src)
+target_link_libraries(verifykey_real PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    OpenSSL::Crypto
+)
+endif()
+
+# ---------------------------------------------------------------------------
 # bamboo_toolchain_check: Qt-free 烟雾测试（验证 cmake+ninja+gcc 链 + sqlite3）
 #   不依赖 Qt / OpenSSL，作为 Qt-less 子集的主输出。装 Qt 之后仍可作为 bambooRat.exe 启动前的基础检查。
 # ---------------------------------------------------------------------------

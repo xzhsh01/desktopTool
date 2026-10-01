@@ -593,17 +593,27 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
             // 4.x 的 type=47 (动画表情) message_content 是 zstd 压缩 XML；runQuery 因为
             // 列声明是 TEXT 但内容是二进制，已经把原始字节替换成 kZstdMark 标记，md5 解析不到。
             // 这里对当前 session 批量再查一次原始字节（按 server_id 映射），下面循环里按需解压。
+            // ⚠ 必须直接 sqlite3_column_blob 拿 BLOB 字节，绕开 runOn 的 zstd→mark 替换。
             QHash<qint64, QByteArray> zstdRawBySid;
             {
-                const QString rawSql = QString(
-                    "SELECT server_id, message_content FROM %1 "
-                    "WHERE local_type = 47 AND length(message_content) >= 4").arg(tableName);
-                auto rawRows = runOn(db, rawSql, {});
-                for (const auto& rr : rawRows) {
-                    const qint64 sid = rr.value(0).toLongLong();
-                    // 当列类型是 TEXT 时 runQuery 返回 QString；toByteArray() 再 toUtf8() 是无损失的
-                    const QByteArray raw = rr.value(1).toByteArray();
-                    zstdRawBySid.insert(sid, raw);
+                sqlite3* rawDb = nullptr;
+                if (sqlite3_open(db.toUtf8().constData(), &rawDb) == SQLITE_OK) {
+                    const QString rawSql = QString(
+                        "SELECT server_id, message_content FROM %1 "
+                        "WHERE local_type = 47 AND length(message_content) >= 4").arg(tableName);
+                    sqlite3_stmt* rst = nullptr;
+                    if (sqlite3_prepare_v2(rawDb, rawSql.toUtf8().constData(),
+                                            -1, &rst, nullptr) == SQLITE_OK) {
+                        while (sqlite3_step(rst) == SQLITE_ROW) {
+                            const qint64 sid = sqlite3_column_int64(rst, 0);
+                            const char* data = static_cast<const char*>(
+                                sqlite3_column_blob(rst, 1));
+                            const int n = sqlite3_column_bytes(rst, 1);
+                            zstdRawBySid.insert(sid, QByteArray(data, n));
+                        }
+                    }
+                    if (rst) sqlite3_finalize(rst);
+                    sqlite3_close(rawDb);
                 }
             }
             for (const auto& r : rows) {
@@ -638,7 +648,19 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
                 if (m.type == 47 && m.attachMd5.isEmpty()
                     && content == kZstdMark
                     && zstdRawBySid.contains(m.msgId)) {
-                    const QByteArray plain = decompressZstdText(zstdRawBySid.value(m.msgId));
+                    const QByteArray rawZstd = zstdRawBySid.value(m.msgId);
+                    const QByteArray plain = decompressZstdText(rawZstd);
+                    static QSet<qint64> s_logged;
+                    if (!s_logged.contains(m.msgId)) {
+                        s_logged.insert(m.msgId);
+                        qInfo().noquote()
+                            << QStringLiteral("[wechat.db][emoji] sid=%1 raw=%2B zstdMagic=%3 plain=%4B md5=%5")
+                                .arg(m.msgId)
+                                .arg(rawZstd.size())
+                                .arg(rawZstd.left(4).toHex())
+                                .arg(plain.size())
+                                .arg(m.attachMd5);
+                    }
                     if (!plain.isEmpty()) {
                         m.attachMd5 = extractImageMd5FromXml(QString::fromUtf8(plain));
                     }
