@@ -519,6 +519,9 @@ namespace {
 
 // 从指定进程的内存中找 key；返回 32 位 hex 或空串。
 // proc 由调用方 OpenProcess 得到，函数内部不 Close。
+// 扫描策略：MEM_PRIVATE（heap） + MEM_IMAGE（dll .text/.data/.rdata）。
+//  之前限制 writable+isImage 与 >50 MB region skip，导致 Weixin.dll 100+ MB image
+//  段被全部跳过；key 可能驻留在 .rdata/.data 只读段（OS 自带内存指针指向）。
 QString scanPidForImageKey(HANDLE proc, quint32 pid, const unsigned char ct[16]) {
     SYSTEM_INFO si = {};
     GetSystemInfo(&si);
@@ -527,10 +530,9 @@ QString scanPidForImageKey(HANDLE proc, quint32 pid, const unsigned char ct[16])
     const quint64 limit = std::min<quint64>(0x7FFFFFFFFFFFULL,
                                             reinterpret_cast<quint64>(si.lpMaximumApplicationAddress));
     quint64 tries = 0;
-    // 不做 per-pointer 去重：AES 双射，相同 ct/key 必然解出相同 pt。
-    // 单进程硬上限 50M tries = 800 MB 扫描，覆盖典型微信子进程 heap。
-    constexpr quint64 kHardCap = 50'000'000ULL;
-    constexpr quint64 kReportEvery = 1'000'000ULL;
+    // 单进程硬上限 200M tries ≈ 200 MB 线性扫描：足以扫完 Weixin.dll .text/.data/.rdata
+    constexpr quint64 kHardCap = 200'000'000ULL;
+    constexpr quint64 kReportEvery = 5'000'000ULL;
     Logger::instance().info(
         QString("extractImageKey: start scanning pid=%1 region=0x%2..0x%3 hardCap=%4")
             .arg(pid).arg(addr, 16).arg(limit, 16).arg(kHardCap),
@@ -542,17 +544,11 @@ QString scanPidForImageKey(HANDLE proc, quint32 pid, const unsigned char ct[16])
             break;
         const quint64 regionEnd = reinterpret_cast<quint64>(mbi.BaseAddress) + mbi.RegionSize;
 
-        // 过滤：committed 且可读；只读 image 段跳过；>50 MB 的大映射跳过。
-        const bool isImage = (mbi.Type == MEM_IMAGE);
-        const bool isMapped = (mbi.Type == MEM_MAPPED);
+        // 过滤：committed 且可读；只跳过 NOACCESS/GUARD；mapped>200MB 跳过避免误判。
         const bool readable = (mbi.State == MEM_COMMIT)
             && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
-        const bool writable = (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY |
-                                              PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
-        const bool tooBig = (mbi.RegionSize > 50ull * 1024 * 1024);
-        const bool skip = !readable || (!writable && isImage) ||
-                          (isMapped && tooBig) ||
-                          (isImage && tooBig);
+        const bool tooBig = (mbi.RegionSize > 200ull * 1024 * 1024);
+        const bool skip = !readable || tooBig;
         if (!skip) {
             QByteArray buf(static_cast<int>(mbi.RegionSize), Qt::Uninitialized);
             SIZE_T read = 0;
@@ -577,7 +573,7 @@ QString scanPidForImageKey(HANDLE proc, quint32 pid, const unsigned char ct[16])
                     if (tries - lastReport >= kReportEvery) {
                         lastReport = tries;
                         qDebug().noquote() << "[wechat.key] progress tries=" << tries
-                                           << "addr=0x" + QString::number(addr + i, 16);
+                                          << "addr=0x" + QString::number(addr + i, 16);
                     }
                 }
             }
@@ -590,10 +586,9 @@ QString scanPidForImageKey(HANDLE proc, quint32 pid, const unsigned char ct[16])
     return {};
 }
 
-// 从 .dat 文件读取 CT（16 字节密文）；返回是否成功。
-// ct15 = byte[15..30]（含 padding），ct16 = byte[16..31]（对齐首块）。
-bool loadOracleCt(const QString& knownDatPath, unsigned char ct15[16],
-                  unsigned char ct16[16], QString* errOut) {
+// 从 .dat 文件读取 CT（16 字节首块密文）；返回是否成功。
+// V2 格式：byte[0..5] magic, byte[6..14] reserved (9 字节), byte[15..30] 首块密文。
+bool loadOracleCt(const QString& knownDatPath, unsigned char ct[16], QString* errOut) {
     if (knownDatPath.isEmpty() || !QFile::exists(knownDatPath)) {
         if (errOut) *errOut = QStringLiteral("oracle .dat 不存在：%1").arg(knownDatPath);
         return false;
@@ -618,10 +613,8 @@ bool loadOracleCt(const QString& knownDatPath, unsigned char ct15[16],
             .arg((unsigned char)dat[3], 2, 16, QChar('0'));
         return false;
     }
-    memset(ct15, 0, 16);
-    memset(ct16, 0, 16);
-    memcpy(ct15, dat.constData() + 15, 16);
-    memcpy(ct16, dat.constData() + 16, 16);
+    memset(ct, 0, 16);
+    memcpy(ct, dat.constData() + 15, 16);
     return true;
 }
 
@@ -635,14 +628,13 @@ void setOpenProcErr(quint32 pid, QString* errOut) {
 } // namespace
 
 QString extractImageKey(quint32 pid, const QString& knownDatPath, QString* errOut) {
-    unsigned char ct15[16] = {}, ct16[16] = {};
-    if (!loadOracleCt(knownDatPath, ct15, ct16, errOut)) return {};
+    unsigned char ct[16] = {};
+    if (!loadOracleCt(knownDatPath, ct, errOut)) return {};
 
     HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
     if (!proc) { setOpenProcErr(pid, errOut); return {}; }
 
-    QString keyHex = scanPidForImageKey(proc, pid, ct16);
-    if (keyHex.isEmpty()) keyHex = scanPidForImageKey(proc, pid, ct15);
+    const QString keyHex = scanPidForImageKey(proc, pid, ct);
     CloseHandle(proc);
 
     if (keyHex.isEmpty() && errOut) {
@@ -660,8 +652,8 @@ QString extractImageKey(quint32 pid, const QString& knownDatPath, QString* errOu
 QString extractImageKeyMulti(const QList<quint32>& pids,
                              const QString& knownDatPath,
                              QString* errOut) {
-    unsigned char ct15[16] = {}, ct16[16] = {};
-    if (!loadOracleCt(knownDatPath, ct15, ct16, errOut)) return {};
+    unsigned char ct[16] = {};
+    if (!loadOracleCt(knownDatPath, ct, errOut)) return {};
 
     Logger::instance().info(
         QString("extractImageKeyMulti: scanning %1 pids").arg(pids.size()),
@@ -676,8 +668,7 @@ QString extractImageKeyMulti(const QList<quint32>& pids,
             Logger::instance().warn(lastErr, "wechat.key");
             continue;
         }
-        QString k = scanPidForImageKey(proc, pid, ct16);
-        if (k.isEmpty()) k = scanPidForImageKey(proc, pid, ct15);
+        const QString k = scanPidForImageKey(proc, pid, ct);
         CloseHandle(proc);
         if (!k.isEmpty()) {
             Logger::instance().info(
