@@ -263,6 +263,9 @@ void WeChatWidget::onAccountsChanged() {
                                           Q_ARG(QString, m_currentAccountId));
             }
         }
+    } else {
+        // 当前账号还在：刷新图片上下文（image key 可能刚补齐）
+        applyImageContextForAccount(m_currentAccountId);
     }
     if (m_sidebar) m_sidebar->rebuildTree(m_currentAccountId);
     setStatusText(QString("账号数：%1").arg(accs.size()));
@@ -618,14 +621,39 @@ void WeChatWidget::onSyncFailed(const QString& accId, const QString& reason) {
 
 // ── 缓存呈现 ────────────────────────────────────────────────────────────────
 
+void WeChatWidget::applyImageContextForAccount(const QString& accId) {
+    if (!m_detailPanel) return;
+    auto* acc = WeChatAccountManager::instance().getById(accId);
+    if (!acc) {
+        m_detailPanel->setImageContext(QString(), QByteArray());
+        return;
+    }
+    // 16 字节 AES-128-ECB key（用于 V2 .dat 图片解密）
+    const QString imageKeyHex = acc->imageKeyHex;
+    QByteArray key16;
+    if (imageKeyHex.size() == 32) key16 = QByteArray::fromHex(imageKeyHex.toLatin1());
+    m_detailPanel->setImageContext(acc->dataDir, key16);
+    // 强制 detail 重新渲染当前 talker 的气泡（key 之前可能缺 / dataDir 刚切换）
+    if (!m_currentTalker.isEmpty()) {
+        const auto msgs = CacheDb::loadMessages(accId, m_currentTalker, 0);
+        m_detailPanel->renderMessages(msgs, m_currentTalker);
+        m_lastRenderedMsgCount = msgs.size();
+    }
+}
+
 void WeChatWidget::presentFromCache(const QString& accId) {
     if (accId.isEmpty()) return;
 
     // 短路：重复点击同一 accId 且数据已加载 → 不重读 CacheDb（省 SQL + 不触发 listPanel setSessions）
     if (accId == m_currentAccountId &&
         m_sessionsCache.contains(accId) && m_contactsCache.contains(accId)) {
+        // 仍然更新图片上下文（image key 可能异步到达）
+        applyImageContextForAccount(accId);
         return;
     }
+
+    // 切到某账号时同步设置图片解密上下文（dataDir + imageKey）
+    applyImageContextForAccount(accId);
 
     const auto sessions = CacheDb::loadSessions(accId, 0);
     const auto contacts = CacheDb::loadContacts(accId);

@@ -39,6 +39,10 @@ public slots:
     // 从正在运行的微信进程提取 DB 密钥
     void extractKey(const QString& dbPath);
 
+    // 从正在运行的微信进程提取 V2 图片 AES-128-ECB key（需要已知 .dat 文件做 oracle）
+    // （可选附加任务）从指定 pid 再尝试找 db key + image key（用于后台扫描）
+    void extractImageKey(const QString& knownDatPath);
+
 signals:
     // 加载账号数据
     void accountLoaded(const QString& accId,
@@ -57,4 +61,6 @@ signals:
 
     // 提取密钥
     void keyExtracted(const QString& key, const QString& err);
+    // 提取图片 key
+    void imageKeyExtracted(const QString& key16Hex, const QString& err);
 };

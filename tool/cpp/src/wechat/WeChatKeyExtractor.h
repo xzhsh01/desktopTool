@@ -46,4 +46,27 @@ QStringList extractXorKeys(quint32 pid, QString* errOut = nullptr);
 // 便捷入口：自动寻找运行中的微信进程并提取（逐个进程尝试，用 dbPath 验证）
 QString extractFromRunningWeChat(const QString& dbPath, QString* errOut = nullptr);
 
+// ── V2 图片 AES-128-ECB key 提取 ─────────────────────────────────────────────
+//
+// WeChat 4.x V2 图片加密使用 AES-128-ECB，16 字节 key 也在进程内存中。
+// 找法：扫描进程内存中任意 16 字节块，用已知 .dat 文件首块密文做 oracle：
+//   - dat 头 15 字节已知 (07 08 V2 08 07 + 9 reserved)
+//   - 字节 15..30 是 16 字节密文 (CT)
+//   - 用候选 key 解密 CT 后必须匹配某个图片 magic（JPEG/PNG/GIF/WebP/BMP）
+// 返回 32 位 hex，失败空串。
+//
+// knownDatPath: 任意一个本地 .dat 图片文件路径（用于 oracle）
+QString extractImageKey(quint32 pid, const QString& knownDatPath,
+                        QString* errOut = nullptr);
+
+// 多进程扫描：依次在每个 pid 内存中尝试找 key，找到即返回。
+// 用于 image key 可能在子进程（WeChatAppEx）而非主 Weixin 的场景。
+QString extractImageKeyMulti(const QList<quint32>& pids,
+                             const QString& knownDatPath,
+                             QString* errOut = nullptr);
+
+// 枚举所有与微信相关的进程（Weixin.exe + WeChatAppEx.exe + WeChat.exe）
+// 用于多进程 image key 扫描（无需登录态校验）
+QList<quint32> findAllWeChatRelatedPids();
+
 } // namespace WeChatKeyExtractor

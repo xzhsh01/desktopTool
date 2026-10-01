@@ -117,6 +117,8 @@ private:
     void presentFromCache(const QString& accId);
     // 缓存查询：判断某账号是否已有同步好的数据
     bool hasCached(const QString& accId) const;
+    // 应用某账号的图片解密上下文（dataDir + 16 字节 AES key）到 detailPanel
+    void applyImageContextForAccount(const QString& accId);
     // 状态栏文本（节流：只显示"最后一次 updateStatusBar 调用"）
     void updateStatusBar();
     void setStatusText(const QString& text);

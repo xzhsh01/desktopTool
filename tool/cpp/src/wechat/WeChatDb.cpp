@@ -1,4 +1,5 @@
 #include "WeChatDb.h"
+#include "CacheDb.h"
 #include "core/Logger.h"
 
 #include <QDir>
@@ -141,6 +142,35 @@ bool isAllZeros(const char* p, int n) {
 
 // 消息预览文本：由类型生成（供会话列表与消息气泡共用）
 QString previewOf(int type, int subType, const QString& content, const QString& compressed);
+
+// ── 图片附件 md5 提取 ──────────────────────────────────────────────────────
+// 4.x packed_info_data 中的图片 md5 总是位于 byte 8..40（0-based）。
+// 已实测验证：所有 type 3 / 47 的 packed 都是 42 字节结构：08 22 10 01 1A 22
+// 22 20 [32 ASCII md5] 58 00；md5 段为 byte[8..40)（共 32 字节）。
+QString WeChatDb::extractImageMd5FromPacked(const QByteArray& packed) {
+    if (packed.size() < 41) return {};
+    const char* p = packed.constData();
+    for (int i = 8; i < 40; ++i) {
+        const char c = p[i];
+        const bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        if (!isHex) return {};
+    }
+    return QString::fromLatin1(p + 8, 32);
+}
+
+// 3.x 图片 StrContent 是 XML：<img ... md5="..." midimgmd5="..." cdnthumbmd5="..." ... />
+// 优先取原图 md5，再退到 midimgmd5（中图），再退到 cdnthumbmd5（缩略图）。
+// 内联实现以避免与 CacheDb 的循环依赖（keytest/verifykey 子项目不链 CacheDb.cpp）。
+QString WeChatDb::extractImageMd5FromXml(const QString& xml) {
+    if (xml.isEmpty()) return {};
+    static const QRegularExpression kMd5Attr(
+        QStringLiteral("(?:md5|midimgmd5|cdnmidimgmd5|cdnthumbmd5)"
+                       "\\s*=\\s*\"([0-9a-fA-F]{32})\""),
+        QRegularExpression::CaseInsensitiveOption);
+    const auto m = kMd5Attr.match(xml);
+    if (!m.hasMatch()) return {};
+    return m.captured(1).toLower();
+}
 
 // ── 静态：密钥校验 ──────────────────────────────────────────────────────────
 
@@ -520,7 +550,7 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
 
         QString sql = QString(
             "SELECT m.sort_seq, m.server_id, m.local_type, IFNULL(n.user_name,''), "
-            "m.create_time, m.status, m.message_content "
+            "m.create_time, m.status, m.message_content, m.packed_info_data "
             "FROM %1 m LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid "
             "ORDER BY m.sort_seq DESC").arg(tableName);
         if (limit > 0) sql += QString(" LIMIT %1").arg(limit);
@@ -535,6 +565,7 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
                 const qint64 ts = r.value(4).toLongLong();
                 const int status = r.value(5).toInt();
                 QString content = r.value(6).toString();
+                const QByteArray packed = r.value(7).toByteArray();
                 m.time = QDateTime::fromSecsSinceEpoch(ts);
                 // status==2 表示已发送（自己）；单聊时发送者≠对方也视为自己
                 m.isSender = (status == 2) || (!isRoom && !sender.isEmpty() && sender != talker);
@@ -548,6 +579,10 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
                 m.senderName = displayName(m.senderId);
                 m.content = content;
                 m.display = previewOf(m.type, 0, content, QString());
+                // 提取图片附件 md5（type 3 / 47 从 packed_info_data 直接读）
+                if (m.type == 3 || m.type == 47) {
+                    m.attachMd5 = extractImageMd5FromPacked(packed);
+                }
                 out.append(m);
             }
         }
@@ -586,6 +621,10 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
 
             m.content = content;
             m.display = previewOf(m.type, m.subType, content, compressed);
+            // 3.x 图片附件：从 StrContent XML 中提取 <img> 标签的 md5
+            if (m.type == 3 || m.type == 47) {
+                m.attachMd5 = extractImageMd5FromXml(content);
+            }
             out.append(m);
         }
     }
@@ -594,6 +633,27 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
     std::sort(out.begin(), out.end(),
               [](const ChatMessage& a, const ChatMessage& b) { return a.time < b.time; });
     return out;
+}
+
+// ── 路径解析 ─────────────────────────────────────────────────────────────────
+
+QString WeChatDb::talkerMd5(const QString& talker) {
+    return QString::fromLatin1(
+        QCryptographicHash::hash(talker.toUtf8(), QCryptographicHash::Md5).toHex());
+}
+
+QString WeChatDb::resolveAttachPath(const QString& talker, const QDateTime& msgTime,
+                                    const QString& md5, const QString& sub) const {
+    if (m_dataDir.isEmpty() || md5.isEmpty() || msgTime.isNull())
+        return {};
+    const QString base = m_dataDir + "/msg/attach/" + talkerMd5(talker) + "/"
+                       + msgTime.toString(QStringLiteral("yyyy-MM")) + "/" + sub + "/";
+    QString p = base + md5 + ".dat";
+    if (QFileInfo::exists(p)) return p;
+    // 也尝试去前缀版本（部分旧版本用 _t.dat 缩略图在前缀前）
+    p = base + md5 + "_t.dat";
+    if (QFileInfo::exists(p)) return p;
+    return base + md5 + ".dat";  // 返回主路径，由调用方决定如何处理 missing
 }
 
 // ── 联系人 ───────────────────────────────────────────────────────────────────

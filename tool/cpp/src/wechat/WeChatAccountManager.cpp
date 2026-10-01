@@ -47,6 +47,7 @@ void WeChatAccountManager::load() {
         a.wxid       = o["wxid"].toString();
         a.dataDir    = o["dataDir"].toString();
         a.keyHex     = o["keyHex"].toString();   // DPAPI 密文
+        a.imageKeyHex = o["imageKeyHex"].toString(); // V2 图片 AES-128-ECB key（明文 hex）
         a.version    = o["version"].toString();
         a.createdAt  = QDateTime::fromString(o["createdAt"].toString(), Qt::ISODate);
         a.updatedAt  = QDateTime::fromString(o["updatedAt"].toString(), Qt::ISODate);
@@ -64,6 +65,7 @@ void WeChatAccountManager::save() {
         o["wxid"]      = a.wxid;
         o["dataDir"]   = a.dataDir;
         o["keyHex"]    = a.keyHex;
+        o["imageKeyHex"] = a.imageKeyHex;
         o["version"]   = a.version;
         o["createdAt"] = a.createdAt.toString(Qt::ISODate);
         o["updatedAt"] = a.updatedAt.toString(Qt::ISODate);
@@ -108,6 +110,8 @@ WeChatAccountManager::Account* WeChatAccountManager::add(const QVariantMap& data
         else
             a.keyHex = key;   // DPAPI 不可用时明文兜底
     }
+    // 图片 AES key（明文 hex，32 字符 = 16 字节；非敏感）
+    a.imageKeyHex = data.value("imageKeyHex").toString().trimmed();
 
     m_accounts.append(a);
     save();
@@ -129,6 +133,9 @@ bool WeChatAccountManager::update(const QString& id, const QVariantMap& data) {
             a->keyHex = Crypto::instance().isAvailable()
                         ? Crypto::instance().encrypt(key) : key;
         }
+    }
+    if (data.contains("imageKeyHex")) {
+        a->imageKeyHex = data.value("imageKeyHex").toString().trimmed();
     }
     a->updatedAt = QDateTime::currentDateTime();
     save();

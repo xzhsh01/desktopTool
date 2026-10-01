@@ -1,14 +1,22 @@
 #include "wechat/ui/WeChatDetailPanel.h"
 #include "app/Theme.h"
+#include "wechat/WeChatImageDecoder.h"
 
+#include <QCryptographicHash>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
 #include <QHBoxLayout>
+#include <QImage>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
-#include <QPointer>
 #include <QPixmap>
+#include <QPointer>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QStackedWidget>
@@ -18,7 +26,63 @@
 namespace {
 const QString kBubbleSelf  = "#95EC69";   // 微信绿
 const QString kBubbleOther = Theme::kSurfaceAlt;
+
+// 单张图片在气泡内的最大边长（宽高都限）
+constexpr int kImageBubbleMaxSide = 240;
 } // namespace
+
+// ── 图片解密上下文 ──────────────────────────────────────────────────────────
+
+QString WeChatDetailPanel::resolveDatPath(const QString& talker, const QDateTime& msgTime,
+                                          const QString& md5, const QString& sub) const {
+    if (m_dataDir.isEmpty() || md5.isEmpty() || !msgTime.isValid()) return {};
+    const QString talkerMd5 = QString::fromLatin1(
+        QCryptographicHash::hash(talker.toUtf8(), QCryptographicHash::Md5).toHex());
+    const QString base = m_dataDir + "/msg/attach/" + talkerMd5 + "/"
+                       + msgTime.toString(QStringLiteral("yyyy-MM")) + "/" + sub + "/";
+    QString p = base + md5 + ".dat";
+    if (QFileInfo::exists(p)) return p;
+    // 也尝试缩略图（_t.dat）作为兜底
+    p = base + md5 + "_t.dat";
+    if (QFileInfo::exists(p)) return p;
+    return base + md5 + ".dat";
+}
+
+void WeChatDetailPanel::setImageContext(const QString& dataDir, QByteArray imageKey) {
+    m_dataDir = dataDir;
+    m_imageKey = std::move(imageKey);
+}
+
+void WeChatDetailPanel::setImageKey(const QByteArray& key) {
+    m_imageKey = key;
+}
+
+QByteArray WeChatDetailPanel::decryptAttachImage(const QString& talker,
+                                                 const QDateTime& msgTime,
+                                                 const QString& md5,
+                                                 QString* outPath, QString* outErr) {
+    auto err = [&](const QString& s) {
+        if (outErr) *outErr = s;
+        return QByteArray();
+    };
+    if (m_dataDir.isEmpty()) return err(QStringLiteral("no dataDir"));
+    if (m_imageKey.size() != 16)
+        return err(QStringLiteral("image key not set (size=%1)").arg(m_imageKey.size()));
+    if (md5.isEmpty() || talker.isEmpty() || !msgTime.isValid())
+        return err(QStringLiteral("missing md5/talker/time"));
+    const QString datPath = resolveDatPath(talker, msgTime, md5, QStringLiteral("Img"));
+    if (outPath) *outPath = datPath;
+    if (datPath.isEmpty() || !QFile::exists(datPath))
+        return err(QStringLiteral("dat not found: %1").arg(datPath));
+    QFile f(datPath);
+    if (!f.open(QIODevice::ReadOnly))
+        return err(QStringLiteral("open dat failed: %1").arg(f.errorString()));
+    const QByteArray dat = f.readAll();
+    f.close();
+    QByteArray plain = WeChatImageDecoder::decryptV2(dat, m_imageKey);
+    if (plain.isEmpty()) return err(QStringLiteral("decryptV2 returned empty"));
+    return plain;
+}
 
 WeChatDetailPanel::WeChatDetailPanel(QWidget* parent) : QWidget(parent) {
     auto* lay = new QVBoxLayout(this);
@@ -373,6 +437,74 @@ QWidget* WeChatDetailPanel::makeBubble(const QVariantMap& m) {
     const bool isLink   = (type == 49 && subType == 5);
 
     if (!isSystem && isAttach) {
+        // ── 图片 / GIF：尝试就地解码显示 ──
+        // 条件：type 3 或 47、attachMd5 非空、image 上下文就绪（db + 16 字节 key）
+        const QString attachMd5 = m["attachMd5"].toString();
+        const qint64  msgTimeTs  = m["time"].toLongLong();
+        const QDateTime msgDt = msgTimeTs > 0 ? QDateTime::fromSecsSinceEpoch(msgTimeTs) : QDateTime();
+        const bool isImage = (type == 3 || type == 47);
+        bool imageDecoded = false;
+        if (isImage && !attachMd5.isEmpty() && hasImageContext() && msgDt.isValid()) {
+            QString err;
+            QString datPath;
+            QByteArray plain = decryptAttachImage(m_currentTalker, msgDt, attachMd5, &datPath, &err);
+            if (!plain.isEmpty()) {
+                QImage img;
+                if (img.loadFromData(plain)) {
+                    // 等比缩放到 maxSide
+                    QPixmap pm = QPixmap::fromImage(img);
+                    if (pm.width() > kImageBubbleMaxSide || pm.height() > kImageBubbleMaxSide) {
+                        pm = pm.scaled(kImageBubbleMaxSide, kImageBubbleMaxSide,
+                                       Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                    }
+                    auto* card = new QWidget;
+                    card->setObjectName("imageCard");
+                    card->setStyleSheet(QString(
+                        "QWidget#imageCard{background:%1;border-radius:6px;padding:0;}"
+                        "QWidget#imageCard QLabel{background:transparent;}")
+                        .arg(self ? kBubbleSelf : kBubbleOther));
+                    auto* cl = new QVBoxLayout(card);
+                    cl->setContentsMargins(4, 4, 4, 4);
+                    cl->setSpacing(2);
+                    auto* pic = new QLabel;
+                    pic->setPixmap(pm);
+                    pic->setStyleSheet("background:transparent;");
+                    pic->setToolTip(QStringLiteral("点击查看大图（%1）").arg(attachMd5));
+                    cl->addWidget(pic);
+                    // 下方加 type 标签 + 大小
+                    auto* metaRow = new QHBoxLayout;
+                    metaRow->setSpacing(6);
+                    metaRow->setContentsMargins(0,0,0,0);
+                    auto* kind = new QLabel(attachKindLabel(type, subType));
+                    kind->setStyleSheet(QString("color:%1;font-size:11px;font-weight:600;"
+                                                "background:transparent;")
+                                        .arg(self ? "#2A6B1F" : Theme::kMuted));
+                    metaRow->addWidget(kind);
+                    metaRow->addStretch(1);
+                    if (attachSize > 0) {
+                        auto* sizeLbl = new QLabel(fmtSize(attachSize));
+                        sizeLbl->setStyleSheet(QString("color:%1;font-size:11px;"
+                                                      "background:transparent;")
+                                               .arg(self ? "#2A6B1F" : Theme::kFaint));
+                        metaRow->addWidget(sizeLbl);
+                    }
+                    cl->addLayout(metaRow);
+                    // 保存原始字节到 widget 属性（供点击放大用）
+                    card->setProperty("imgBytes", plain);
+                    card->setProperty("imgMd5",   attachMd5);
+                    card->setProperty("datPath",  datPath);
+                    card->setCursor(Qt::PointingHandCursor);
+                    // 事件过滤：本 panel 已重写 eventFilter 转发
+                    card->installEventFilter(this);
+                    pic->installEventFilter(this);
+                    colWrap->addWidget(card, 0, self ? Qt::AlignRight : Qt::AlignLeft);
+                    imageDecoded = true;
+                }
+            }
+        }
+
+        // 没解码出图片 → 原附件卡片
+        if (!imageDecoded) {
         // 卡片
         auto* card = new QWidget;
         card->setObjectName("attachCard");
@@ -433,6 +565,7 @@ QWidget* WeChatDetailPanel::makeBubble(const QVariantMap& m) {
                                           "background:transparent;margin-top:2px;")
                                   .arg(self ? "#2A6B1F" : Theme::kFaint));
             urlLbl->setMaximumWidth(360);
+            urlLbl->setProperty("urlToOpen", attachUrl);
             cl->addWidget(urlLbl);
         }
 
@@ -446,6 +579,7 @@ QWidget* WeChatDetailPanel::makeBubble(const QVariantMap& m) {
         }
 
         colWrap->addWidget(card, 0, self ? Qt::AlignRight : Qt::AlignLeft);
+        } // imageDecoded
     } else {
         // ── 文本 / 系统：普通气泡 ──
         QString text = m["display"].toString();
@@ -601,4 +735,73 @@ void WeChatDetailPanel::updateContactDetail(const QVariantMap& detail) {
     // 数据更新了（带详细字段）→ 清短路标记 + 强制重新渲染
     m_currentShownContact.clear();
     showContact(detail);
+}
+
+// ── 图片放大预览 ────────────────────────────────────────────────────────────
+
+class ImageViewerDialog : public QWidget {
+public:
+    explicit ImageViewerDialog(const QByteArray& bytes, QWidget* parent = nullptr)
+        : QWidget(parent, Qt::Dialog | Qt::FramelessWindowHint) {
+        setAttribute(Qt::WA_DeleteOnClose);
+        setStyleSheet("background:rgba(0,0,0,220);");
+        auto* lay = new QVBoxLayout(this);
+        lay->setContentsMargins(0, 0, 0, 0);
+        m_lbl = new QLabel;
+        m_lbl->setAlignment(Qt::AlignCenter);
+        m_lbl->setStyleSheet("background:transparent;");
+        QImage img;
+        if (img.loadFromData(bytes)) {
+            m_source = QPixmap::fromImage(img);
+            m_lbl->setPixmap(m_source);
+        }
+        lay->addWidget(m_lbl);
+        if (parent) {
+            const QPoint gp = parent->mapToGlobal(QPoint(0, 0));
+            setGeometry(gp.x(), gp.y(), parent->width(), parent->height());
+        } else {
+            showFullScreen();
+        }
+        setCursor(Qt::ArrowCursor);
+    }
+    void resizeEvent(QResizeEvent* e) override {
+        QWidget::resizeEvent(e);
+        if (m_source.isNull()) return;
+        const int maxW = width() - 32;
+        const int maxH = height() - 32;
+        if (maxW < 64 || maxH < 64) return;
+        m_lbl->setPixmap(m_source.scaled(maxW, maxH, Qt::KeepAspectRatio,
+                                         Qt::SmoothTransformation));
+    }
+    void keyPressEvent(QKeyEvent* e) override {
+        if (e->key() == Qt::Key_Escape || e->key() == Qt::Key_Return ||
+            e->key() == Qt::Key_Space) close();
+        QWidget::keyPressEvent(e);
+    }
+    void mousePressEvent(QMouseEvent* e) override { Q_UNUSED(e); close(); }
+private:
+    QLabel*  m_lbl   = nullptr;
+    QPixmap  m_source;
+};
+
+bool WeChatDetailPanel::eventFilter(QObject* obj, QEvent* ev) {
+    if (ev->type() == QEvent::MouseButtonRelease) {
+        auto* w = qobject_cast<QWidget*>(obj);
+        if (w) {
+            // 找到带 imgBytes 属性的祖先
+            QWidget* card = w;
+            while (card && !card->property("imgBytes").isValid()) card = card->parentWidget();
+            if (card && card->property("imgBytes").isValid()) {
+                const QByteArray bytes = card->property("imgBytes").toByteArray();
+                if (!bytes.isEmpty()) {
+                    auto* dlg = new ImageViewerDialog(bytes, this);
+                    dlg->show();
+                    dlg->raise();
+                    dlg->activateWindow();
+                    return true;
+                }
+            }
+        }
+    }
+    return QWidget::eventFilter(obj, ev);
 }

@@ -530,10 +530,14 @@ void WeChatListPanel::rebuildChatList() {
 
     // 指纹短路：来回切 sidebar chat/contact 时不重建同一份数据
     // （watcher 频繁写但数据未必变；账号切换会清 fp 强制重建）
+    // ⚠ filter 非空时必须 rebuild —— 因为 count() == size() 的判断在
+    //    "未过滤 → 首次输入过滤词" 场景下会误判为已就绪，导致过滤失效。
     const auto& sessions = m_sessionsCache.value(m_currentAccId);
     const QString fp = fingerprint(sessions);
-    if (fp == m_chatListBuiltFp && m_chatList->count() == sessions.size()) {
-        return;   // 数据未变 → 跳过 clear + 重建（关键卡顿优化点）
+    if (filter.isEmpty()
+        && fp == m_chatListBuiltFp
+        && m_chatList->count() == sessions.size()) {
+        return;   // 数据未变 + 无过滤 → 跳过 clear + 重建（卡顿优化点）
     }
     m_chatListBuiltFp = fp;
 
@@ -570,10 +574,13 @@ void WeChatListPanel::rebuildContactList() {
     }
 
     // 指纹短路：来回切 sidebar chat/contact 时不重建同一份数据
+    // ⚠ filter 非空时必须 rebuild（与 rebuildChatList 同因）
     const auto& contacts = m_contactsCache.value(m_currentAccId);
     const QString fp = fingerprint(contacts);
-    if (fp == m_contactListBuiltFp && m_contactList->count() == contacts.size()) {
-        return;   // 数据未变 → 跳过 clear + 重建（关键卡顿优化点）
+    if (filter.isEmpty()
+        && fp == m_contactListBuiltFp
+        && m_contactList->count() == contacts.size()) {
+        return;   // 数据未变 + 无过滤 → 跳过 clear + 重建（卡顿优化点）
     }
     m_contactListBuiltFp = fp;
 

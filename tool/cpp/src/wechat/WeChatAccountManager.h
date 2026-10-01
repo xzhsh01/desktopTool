@@ -30,6 +30,7 @@ public:
         QString wxid;        // 微信 id（wxid_xxx）
         QString dataDir;     // 该账号的数据目录（.../WeChat Files/wxid_xxx）
         QString keyHex;      // 数据库解密密钥（64 位 hex，DPAPI 加密存储）
+        QString imageKeyHex; // V2 图片 AES-128-ECB key（32 位 hex = 16 字节）
         QString version;     // "3.x" / "4.x"
         QDateTime createdAt;
         QDateTime updatedAt;

@@ -39,26 +39,32 @@ private slots:
     void browseDataDir();
     void testKey();
     void extractKey();
+    void extractImageKey();
     void onScanProgress(const QString& msg);
     void onScanExtractDone();
     void onExtractKeyDone(const QString& key, const QString& err);
+    void onExtractImageKeyDone(const QString& key16Hex, const QString& err);
 
 private:
     void buildUi();
     void loadAccount();
     // 数据目录对应的验证数据库（4.x: message_0.db/contact.db；3.x: Msg/MicroMsg.db）
     static QString verifyDbFor(const QString& dir, const QString& version);
+    // 找一个 .dat 文件用于图片 key 提取 oracle（优先用本账号最早的非缩略图 .dat）
+    static QString pickOracleDat(const QString& dataDir);
 
     QString m_editId;
     QLineEdit* m_nameEdit = nullptr;
     QLineEdit* m_wxidEdit = nullptr;
     QLineEdit* m_dirEdit = nullptr;
     QLineEdit* m_keyEdit = nullptr;
+    QLineEdit* m_imageKeyEdit = nullptr;
     QComboBox* m_versionCombo = nullptr;
     QListWidget* m_scanList = nullptr;
     QLabel* m_hintLabel = nullptr;
     QPushButton* m_testBtn = nullptr;
     QPushButton* m_extractBtn = nullptr;
+    QPushButton* m_extractImageKeyBtn = nullptr;
     QMap<QString, QString> m_scanKeys;  // 扫描提取的密钥：wxid → keyHex
 
     // 后台密钥提取（避免 50+ 候选 × 多账号 verifyKey 在主线程阻塞 UI）

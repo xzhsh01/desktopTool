@@ -313,6 +313,28 @@ QList<ProcessInfo> findRunningWeChat() {
     return result;
 }
 
+QList<quint32> findAllWeChatRelatedPids() {
+    QList<quint32> result;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return result;
+    PROCESSENTRY32W pe = {};
+    pe.dwSize = sizeof(pe);
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            const QString name = QString::fromWCharArray(pe.szExeFile).toLower();
+            if (name == QStringLiteral("weixin.exe") ||
+                name == QStringLiteral("wechatappex.exe") ||
+                name == QStringLiteral("wechat.exe")) {
+                if (!result.contains(pe.th32ProcessID)) {
+                    result.append(pe.th32ProcessID);
+                }
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return result;
+}
+
 QStringList extractAllKeys(quint32 pid, int version, QString* errOut) {
     HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
     if (!proc) {
@@ -442,6 +464,242 @@ QString extractFromRunningWeChat(const QString& dbPath, QString* errOut) {
         }
     }
     return QString();
+}
+
+// ── V2 图片 AES-128-ECB key 提取 ─────────────────────────────────────────────
+
+#include <openssl/evp.h>
+#include <openssl/aes.h>
+
+// AES-128-ECB 解密单块 16 字节。
+// 用 OpenSSL low-level AES_set_decrypt_key + AES_decrypt（单块调用），
+// 比 EVP_CIPHER_CTX 完整 init/update/final 快 ~10×（EVP 每块要重新做 ctx 分配与 key schedule）。
+static inline bool aesEcbDecryptBlock(const unsigned char key[16],
+                                       const unsigned char in[16],
+                                       unsigned char out[16]) {
+    AES_KEY k;
+    AES_set_decrypt_key(key, 128, &k);
+    AES_decrypt(in, out, &k);
+    return true;
+}
+
+// 判断 16 字节明文是否像图片 magic（严格版：要求 4+ 字节特征 + 合理字段）
+static bool looksLikeImagePlain(const unsigned char p[16]) {
+    // JPEG: FF D8 FF + E0/E1/DB/EE 或 C0~CF（SOI + marker）
+    if (p[0] == 0xFF && p[1] == 0xD8 && p[2] == 0xFF) {
+        const unsigned char m = p[3];
+        if (m == 0xE0 || m == 0xE1 || m == 0xE2 || m == 0xE3 ||
+            m == 0xDB || m == 0xEE ||
+            m == 0xC0 || m == 0xC1 || m == 0xC2 || m == 0xC3 ||
+            m == 0xC4 || m == 0xC5 || m == 0xC6 || m == 0xC7 ||
+            m == 0xC8 || m == 0xC9 || m == 0xCA || m == 0xCB ||
+            m == 0xCC || m == 0xCD || m == 0xCE || m == 0xCF) return true;
+        return false;
+    }
+    // PNG: 8 字节 magic + IHDR 长度 (0x00 0x00 0x00 0x0D) + 'I''H''D''R'
+    if (p[0] == 0x89 && p[1] == 0x50 && p[2] == 0x4E && p[3] == 0x47 &&
+        p[4] == 0x0D && p[5] == 0x0A && p[6] == 0x1A && p[7] == 0x0A) return true;
+    // GIF: 6 字节 (47 49 46 38 37/39 61)
+    if (p[0] == 0x47 && p[1] == 0x49 && p[2] == 0x46 && p[3] == 0x38 &&
+        (p[4] == 0x37 || p[4] == 0x39) && p[5] == 0x61) return true;
+    // WebP: RIFF????WEBP (12 字节)
+    if (p[0] == 0x52 && p[1] == 0x49 && p[2] == 0x46 && p[3] == 0x46 &&
+        p[8] == 0x57 && p[9] == 0x45 && p[10] == 0x42 && p[11] == 0x50) return true;
+    // BMP: 42 4D + 合理文件大小（1KB ~ 100MB 小端）+ 0x00 0x00 0x00 0x00 保留
+    if (p[0] == 0x42 && p[1] == 0x4D) {
+        const unsigned int sz = p[2] | (p[3] << 8) | (p[4] << 16) | (p[5] << 24);
+        if (sz >= 1024 && sz <= 100u * 1024u * 1024u &&
+            p[6] == 0x00 && p[7] == 0x00 && p[8] == 0x00 && p[9] == 0x00) return true;
+        return false;
+    }
+    return false;
+}
+
+namespace {
+
+// 从指定进程的内存中找 key；返回 32 位 hex 或空串。
+// proc 由调用方 OpenProcess 得到，函数内部不 Close。
+QString scanPidForImageKey(HANDLE proc, quint32 pid, const unsigned char ct[16]) {
+    SYSTEM_INFO si = {};
+    GetSystemInfo(&si);
+    quint64 addr = std::max<quint64>(0x10000,
+                                     reinterpret_cast<quint64>(si.lpMinimumApplicationAddress));
+    const quint64 limit = std::min<quint64>(0x7FFFFFFFFFFFULL,
+                                            reinterpret_cast<quint64>(si.lpMaximumApplicationAddress));
+    quint64 tries = 0;
+    // 不做 per-pointer 去重：AES 双射，相同 ct/key 必然解出相同 pt。
+    // 单进程硬上限 50M tries = 800 MB 扫描，覆盖典型微信子进程 heap。
+    constexpr quint64 kHardCap = 50'000'000ULL;
+    constexpr quint64 kReportEvery = 1'000'000ULL;
+    Logger::instance().info(
+        QString("extractImageKey: start scanning pid=%1 region=0x%2..0x%3 hardCap=%4")
+            .arg(pid).arg(addr, 16).arg(limit, 16).arg(kHardCap),
+        "wechat.key");
+    quint64 lastReport = 0;
+    while (addr < limit && tries < kHardCap) {
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (VirtualQueryEx(proc, reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0)
+            break;
+        const quint64 regionEnd = reinterpret_cast<quint64>(mbi.BaseAddress) + mbi.RegionSize;
+
+        // 过滤：committed 且可读；只读 image 段跳过；>50 MB 的大映射跳过。
+        const bool isImage = (mbi.Type == MEM_IMAGE);
+        const bool isMapped = (mbi.Type == MEM_MAPPED);
+        const bool readable = (mbi.State == MEM_COMMIT)
+            && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+        const bool writable = (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY |
+                                              PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+        const bool tooBig = (mbi.RegionSize > 50ull * 1024 * 1024);
+        const bool skip = !readable || (!writable && isImage) ||
+                          (isMapped && tooBig) ||
+                          (isImage && tooBig);
+        if (!skip) {
+            QByteArray buf(static_cast<int>(mbi.RegionSize), Qt::Uninitialized);
+            SIZE_T read = 0;
+            if (ReadProcessMemory(proc, mbi.BaseAddress, buf.data(),
+                                  static_cast<SIZE_T>(mbi.RegionSize), &read)
+                && read >= 16) {
+                buf.resize(static_cast<int>(read));
+                for (qsizetype i = 0; i + 16 <= buf.size(); ++i) {
+                    const unsigned char* k = reinterpret_cast<const unsigned char*>(buf.constData()) + i;
+                    unsigned char pt[16];
+                    if (aesEcbDecryptBlock(k, ct, pt) && looksLikeImagePlain(pt)) {
+                        const QString hitHex =
+                            QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(k), 16).toHex());
+                        Logger::instance().info(
+                            QString("extractImageKey: HIT key=%1 addr=%2 tries=%3")
+                                .arg(hitHex).arg(addr + i, 16).arg(tries),
+                            "wechat.key");
+                        return hitHex;
+                    }
+                    ++tries;
+                    if (tries >= kHardCap) break;
+                    if (tries - lastReport >= kReportEvery) {
+                        lastReport = tries;
+                        qDebug().noquote() << "[wechat.key] progress tries=" << tries
+                                           << "addr=0x" + QString::number(addr + i, 16);
+                    }
+                }
+            }
+        }
+        addr = regionEnd;
+    }
+    Logger::instance().warn(
+        QString("extractImageKey: exhausted memory scan, total tries=%1").arg(tries),
+        "wechat.key");
+    return {};
+}
+
+// 从 .dat 文件读取 CT（16 字节密文）；返回是否成功。
+// ct15 = byte[15..30]（含 padding），ct16 = byte[16..31]（对齐首块）。
+bool loadOracleCt(const QString& knownDatPath, unsigned char ct15[16],
+                  unsigned char ct16[16], QString* errOut) {
+    if (knownDatPath.isEmpty() || !QFile::exists(knownDatPath)) {
+        if (errOut) *errOut = QStringLiteral("oracle .dat 不存在：%1").arg(knownDatPath);
+        return false;
+    }
+    QFile f(knownDatPath);
+    if (!f.open(QIODevice::ReadOnly)) {
+        if (errOut) *errOut = QStringLiteral("打开 .dat 失败：%1").arg(f.errorString());
+        return false;
+    }
+    QByteArray dat = f.read(31);
+    f.close();
+    if (dat.size() < 31) {
+        if (errOut) *errOut = QStringLiteral(".dat 太小（%1 字节）").arg(dat.size());
+        return false;
+    }
+    if ((unsigned char)dat[0] != 0x07 || (unsigned char)dat[1] != 0x08 ||
+        (unsigned char)dat[2] != 'V' || (unsigned char)dat[3] != '2') {
+        if (errOut) *errOut = QStringLiteral("不是 V2 .dat 文件（magic=%1 %2 %3 %4）")
+            .arg((unsigned char)dat[0], 2, 16, QChar('0'))
+            .arg((unsigned char)dat[1], 2, 16, QChar('0'))
+            .arg((unsigned char)dat[2], 2, 16, QChar('0'))
+            .arg((unsigned char)dat[3], 2, 16, QChar('0'));
+        return false;
+    }
+    memset(ct15, 0, 16);
+    memset(ct16, 0, 16);
+    memcpy(ct15, dat.constData() + 15, 16);
+    memcpy(ct16, dat.constData() + 16, 16);
+    return true;
+}
+
+// 设置进程访问失败时的诊断文本
+void setOpenProcErr(quint32 pid, QString* errOut) {
+    if (!errOut) return;
+    *errOut = QStringLiteral("无法打开进程（PID %1，err=%2）")
+        .arg(pid).arg(GetLastError());
+}
+
+} // namespace
+
+QString extractImageKey(quint32 pid, const QString& knownDatPath, QString* errOut) {
+    unsigned char ct15[16] = {}, ct16[16] = {};
+    if (!loadOracleCt(knownDatPath, ct15, ct16, errOut)) return {};
+
+    HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
+    if (!proc) { setOpenProcErr(pid, errOut); return {}; }
+
+    QString keyHex = scanPidForImageKey(proc, pid, ct16);
+    if (keyHex.isEmpty()) keyHex = scanPidForImageKey(proc, pid, ct15);
+    CloseHandle(proc);
+
+    if (keyHex.isEmpty() && errOut) {
+        *errOut = QStringLiteral(
+            "未找到图片 AES key。可能原因：\n"
+            "  1) .dat 不是 V2 格式（magic 应为 07 08 V 2 08 07）\n"
+            "  2) 微信版本 ≥ 4.1.10.31，图片 key 可能被 XOR 混淆存储（本工具暂不支持）\n"
+            "  3) 微信进程权限不足（请以管理员权限运行 bambooRat）\n"
+            "  4) oracle .dat 与进程不匹配（用另一张大图重试）\n"
+            "  5) key 只存在子进程中（已尝试全部 Weixin + WeChatAppEx）");
+    }
+    return keyHex;
+}
+
+QString extractImageKeyMulti(const QList<quint32>& pids,
+                             const QString& knownDatPath,
+                             QString* errOut) {
+    unsigned char ct15[16] = {}, ct16[16] = {};
+    if (!loadOracleCt(knownDatPath, ct15, ct16, errOut)) return {};
+
+    Logger::instance().info(
+        QString("extractImageKeyMulti: scanning %1 pids").arg(pids.size()),
+        "wechat.key");
+
+    QString lastErr;
+    for (quint32 pid : pids) {
+        HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
+        if (!proc) {
+            lastErr = QStringLiteral("无法打开进程 PID %1（err=%2）")
+                .arg(pid).arg(GetLastError());
+            Logger::instance().warn(lastErr, "wechat.key");
+            continue;
+        }
+        QString k = scanPidForImageKey(proc, pid, ct16);
+        if (k.isEmpty()) k = scanPidForImageKey(proc, pid, ct15);
+        CloseHandle(proc);
+        if (!k.isEmpty()) {
+            Logger::instance().info(
+                QString("extractImageKeyMulti: HIT on pid=%1 key=%2").arg(pid).arg(k),
+                "wechat.key");
+            return k;
+        }
+    }
+
+    if (errOut) {
+        *errOut = QStringLiteral(
+            "已扫描 %1 个微信进程仍未找到图片 AES key。\n"
+            "最后错误：%2\n"
+            "可能原因：\n"
+            "  1) .dat 不是 V2 格式（magic 应为 07 08 V 2 08 07）\n"
+            "  2) 微信版本 ≥ 4.1.10.31，图片 key 可能被 XOR 混淆存储\n"
+            "  3) 微信进程权限不足（请以管理员权限运行 bambooRat）\n"
+            "  4) oracle .dat 与进程不匹配（用另一张大图重试）\n"
+            "  5) key 仅在特定会话窗口打开时驻留内存（请重试）")
+            .arg(pids.size()).arg(lastErr);
+    }
+    return {};
 }
 
 } // namespace WeChatKeyExtractor

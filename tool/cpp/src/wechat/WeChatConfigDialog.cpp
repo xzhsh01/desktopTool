@@ -7,6 +7,9 @@
 #include "core/Logger.h"
 
 #include <QApplication>
+#include <QDir>
+#include <QFileInfo>
+#include <QFileInfoList>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -43,6 +46,8 @@ WeChatConfigDialog::WeChatConfigDialog(QWidget* parent, const QString& editId)
             m_extractWorker, &QObject::deleteLater);
     connect(m_extractWorker, &WeChatWorker::keyExtracted,
             this, &WeChatConfigDialog::onExtractKeyDone);
+    connect(m_extractWorker, &WeChatWorker::imageKeyExtracted,
+            this, &WeChatConfigDialog::onExtractImageKeyDone);
     m_extractThread->start();
 }
 
@@ -143,6 +148,21 @@ void WeChatConfigDialog::buildUi() {
     keyRow->addWidget(m_hintLabel, 1);
     form->addRow("", keyRow);
 
+    // ── V2 图片 AES key ──
+    m_imageKeyEdit = new QLineEdit;
+    m_imageKeyEdit->setPlaceholderText("32 位十六进制图片密钥（V2 .dat 解密；登录微信后可自动提取）");
+    m_imageKeyEdit->setEchoMode(QLineEdit::Password);
+    form->addRow("图片密钥:", m_imageKeyEdit);
+
+    auto* imgKeyRow = new QHBoxLayout;
+    m_extractImageKeyBtn = new QPushButton("从微信自动提取");
+    m_extractImageKeyBtn->setObjectName("secondaryBtn");
+    connect(m_extractImageKeyBtn, &QPushButton::clicked,
+            this, &WeChatConfigDialog::extractImageKey);
+    imgKeyRow->addWidget(m_extractImageKeyBtn);
+    imgKeyRow->addStretch(1);
+    form->addRow("", imgKeyRow);
+
     root->addLayout(form, 1);
 
     auto* tip = new QLabel(
@@ -193,12 +213,20 @@ void WeChatConfigDialog::buildUi() {
             return;
         }
 
+        const QString imageKey = m_imageKeyEdit->text().trimmed();
+        if (!imageKey.isEmpty() && imageKey.size() != 32) {
+            QMessageBox::warning(this, "微信账号",
+                                  "图片密钥格式错误：需要 32 位十六进制字符串（16 字节）");
+            return;
+        }
+
         QVariantMap data;
         data["name"]    = name;
         data["wxid"]    = wxid;
         data["dataDir"] = dir;
         data["version"] = ver;
         if (!key.isEmpty()) data["keyHex"] = key;
+        if (!imageKey.isEmpty()) data["imageKeyHex"] = imageKey;
 
         auto& mgr = WeChatAccountManager::instance();
         if (m_editId.isEmpty()) {
@@ -451,6 +479,75 @@ QString WeChatConfigDialog::verifyDbFor(const QString& dir, const QString& versi
     return QFile::exists(db) ? db : QString();
 }
 
+// 在 dataDir 下找一个非缩略图的 V2 .dat 用于图片 key 提取 oracle。
+// 优先选最大的（信息熵高 → 解密命中率更高）。
+QString WeChatConfigDialog::pickOracleDat(const QString& dataDir) {
+    if (dataDir.isEmpty() || !QFile::exists(dataDir)) return {};
+    QDir imgRoot(dataDir + "/msg/attach");
+    if (!imgRoot.exists()) return {};
+    QFileInfoList allDats;
+    // 仅扫 Img 子目录下的 .dat（缩略图通常在 _t.dat）；2 层遍历足够
+    const QFileInfoList sessionDirs = imgRoot.entryInfoList(
+        QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time);
+    for (const QFileInfo& session : sessionDirs) {
+        QDir monthRoot(session.absoluteFilePath());
+        const QFileInfoList months = monthRoot.entryInfoList(
+            QDir::Dirs | QDir::NoDotAndDotDot, QDir::Time);
+        for (const QFileInfo& m : months) {
+            QDir imgDir(m.absoluteFilePath() + "/Img");
+            if (!imgDir.exists()) continue;
+            const QFileInfoList dats = imgDir.entryInfoList(
+                QStringList() << "*.dat", QDir::Files, QDir::Time);
+            for (const QFileInfo& d : dats) {
+                if (!d.fileName().endsWith("_t.dat")) allDats.append(d);
+                if (allDats.size() >= 5000) break;
+            }
+        }
+    }
+    if (allDats.isEmpty()) return {};
+    // 选最大文件
+    std::sort(allDats.begin(), allDats.end(),
+              [](const QFileInfo& a, const QFileInfo& b) { return a.size() > b.size(); });
+    return allDats.first().absoluteFilePath();
+}
+
+void WeChatConfigDialog::extractImageKey() {
+    const QString dir = m_dirEdit->text().trimmed();
+    if (dir.isEmpty() || !QFile::exists(dir)) {
+        m_hintLabel->setText("请先填写数据目录");
+        m_hintLabel->setStyleSheet(Theme::statusWarn());
+        return;
+    }
+    const QString oracle = pickOracleDat(dir);
+    if (oracle.isEmpty()) {
+        m_hintLabel->setText(QStringLiteral("数据目录下未找到 V2 .dat 图片（%1/msg/attach/.../Img/*.dat）")
+            .arg(dir));
+        m_hintLabel->setStyleSheet(Theme::statusWarn());
+        return;
+    }
+    m_hintLabel->setStyleSheet(Theme::mutedText());
+    m_hintLabel->setText(QStringLiteral("正在从微信进程提取图片 AES key（oracle=%1）…").arg(oracle));
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    m_extractImageKeyBtn->setEnabled(false);
+    QMetaObject::invokeMethod(m_extractWorker, "extractImageKey",
+                              Qt::QueuedConnection,
+                              Q_ARG(QString, oracle));
+}
+
+void WeChatConfigDialog::onExtractImageKeyDone(const QString& key16Hex, const QString& err) {
+    QApplication::restoreOverrideCursor();
+    m_extractImageKeyBtn->setEnabled(true);
+    if (!key16Hex.isEmpty()) {
+        m_imageKeyEdit->setText(key16Hex);
+        m_hintLabel->setText("图片 key 提取成功 ✓");
+        m_hintLabel->setStyleSheet(Theme::statusOk());
+    } else {
+        m_hintLabel->setText(QStringLiteral("图片 key 提取失败：%1")
+            .arg(err.isEmpty() ? QStringLiteral("未知错误") : err));
+        m_hintLabel->setStyleSheet(Theme::statusErr());
+    }
+}
+
 void WeChatConfigDialog::loadAccount() {
     auto* acc = WeChatAccountManager::instance().getById(m_editId);
     if (!acc) return;
@@ -461,4 +558,6 @@ void WeChatConfigDialog::loadAccount() {
     if (idx >= 0) m_versionCombo->setCurrentIndex(idx);
     // 编辑模式：密钥不回显（避免误改），但保存时强制要求重新填写
     m_keyEdit->setPlaceholderText("必填：重新填写 64 位十六进制数据库密钥");
+    // 图片 key：可回显（提取难度更高，丢了可惜；并且是非敏感字段）
+    m_imageKeyEdit->setText(acc->imageKeyHex);
 }

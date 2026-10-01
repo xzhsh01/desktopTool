@@ -227,6 +227,7 @@ set(COMMON_SOURCES
     src/wechat/CacheDb.cpp
     src/wechat/WeChatConfigDialog.cpp
     src/wechat/WeChatDb.cpp
+    src/wechat/WeChatImageDecoder.cpp
     src/wechat/WeChatKeyExtractor.cpp
     src/wechat/WeChatSyncWorker.cpp
     src/wechat/WeChatWidget.cpp

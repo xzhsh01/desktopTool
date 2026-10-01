@@ -56,8 +56,14 @@ public:
 
     // 从 XML content 中提取附件元信息（type=49 XML 复合消息等）
     // 输出到 m["attachTitle"] / m["attachSize"] / m["attachExt"] / m["attachUrl"] / m["attachMime"]
+    // 以及图片/视频/语音附件的 m["attachMd5"]（.dat 文件名，32 字符 hex）
     static void parseAttachMeta(int type, int subType,
                                const QString& content, QVariantMap& m);
+
+    // 共享：提取图片附件 md5（从 type=3 / 47 的 StrContent XML）
+    static QString extractImageMd5FromXml(const QString& xml);
+    // 共享：提取通用文件 md5（从 type=34 / 43 的 StrContent XML）
+    static QString extractFileMd5FromXml(const QString& xml);
 
     // ── 群成员 ──────────────────────────────────────────────────────
     static bool replaceChatRoomMembers(const QString& accId, const QString& chatRoomId,

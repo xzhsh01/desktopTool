@@ -4,6 +4,7 @@
 #include "wechat/WeChatKeyExtractor.h"
 #include "core/Logger.h"
 
+#include <QFile>
 #include <QVariantMap>
 
 WeChatWorker::WeChatWorker(QObject* parent) : QObject(parent) {}
@@ -126,4 +127,42 @@ void WeChatWorker::extractKey(const QString& dbPath) {
             "WeChatWorker::extractKey ok", "wechat.worker");
     }
     emit keyExtracted(key, err);
+}
+
+void WeChatWorker::extractImageKey(const QString& knownDatPath) {
+    Logger::instance().info(
+        QString("WeChatWorker::extractImageKey: oracle=%1").arg(knownDatPath),
+        "wechat.worker");
+    if (knownDatPath.isEmpty() || !QFile::exists(knownDatPath)) {
+        emit imageKeyExtracted(QString(),
+            QStringLiteral("oracle .dat 不存在：%1").arg(knownDatPath));
+        return;
+    }
+    // 枚举所有微信相关进程：主 Weixin + 全部 WeChatAppEx 子进程
+    const QList<quint32> pids = WeChatKeyExtractor::findAllWeChatRelatedPids();
+    if (pids.isEmpty()) {
+        emit imageKeyExtracted(QString(),
+            QStringLiteral("未检测到运行中的微信进程，请先登录微信"));
+        return;
+    }
+    Logger::instance().info(
+        QString("WeChatWorker::extractImageKey: scanning %1 pids: %2")
+            .arg(pids.size())
+            .arg([&]() {
+                QStringList s; for (auto p : pids) s << QString::number(p);
+                return s.join(',');
+            }()),
+        "wechat.worker");
+
+    QString err;
+    const QString key = WeChatKeyExtractor::extractImageKeyMulti(pids, knownDatPath, &err);
+    if (key.isEmpty()) {
+        Logger::instance().warn(
+            QString("WeChatWorker::extractImageKey failed: %1").arg(err),
+            "wechat.worker");
+    } else {
+        Logger::instance().info(
+            "WeChatWorker::extractImageKey ok", "wechat.worker");
+    }
+    emit imageKeyExtracted(key, err);
 }

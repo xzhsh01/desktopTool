@@ -364,6 +364,9 @@ bool WeChatSyncWorker::syncAccountMessages(const QString& accId) {
             vm["content"]    = m.content;
             vm["display"]    = m.display;
             vm["time"]       = m.time.toSecsSinceEpoch();
+            // 4.x loadMessages 已经从 packed_info_data 提取了图片 md5
+            // 3.x 或 type=49 时 parseAttachMeta 会从 XML 中提取并覆盖
+            if (!m.attachMd5.isEmpty()) vm["attachMd5"] = m.attachMd5;
             // 解析附件元信息（XML 复合消息、媒体消息）
             CacheDb::parseAttachMeta(m.type, m.subType, m.content, vm);
             vl.append(vm);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QDateTime>
 #include <QList>
 #include <QString>
@@ -40,11 +41,34 @@ public:
     void renderMessages(const QList<QVariantMap>& msgs,
                         const QString& currentTalker);
 
+    // ── 图片解密上下文 ──
+    // 由 WeChatWidget 在切换到某账户时调用，提供 dataDir + 16 字节 AES key。
+    // 缺一即无法显示图片（仍然渲染图标占位）。
+    // 通知：图片 key 可能异步到达，调用 setImageKey() 即可，detail 会刷新已渲染的气泡。
+    void setImageContext(const QString& dataDir, QByteArray imageKey);
+    void setImageKey(const QByteArray& key);                    // 仅换 key（已设 dataDir）
+    bool hasImageContext() const { return !m_dataDir.isEmpty() && !m_imageKey.isEmpty(); }
+
 private:
     QWidget* makeDetailPanel();                            // 构建三页
     QWidget* makeBubble(const QVariantMap& msg);           // 单条消息气泡
     QWidget* makeDateSeparator(const QDateTime& t);        // 日期分隔
     QLabel*  makeAvatar(const QString& name, const QString& key, int size);
+
+    // 解析 .dat 路径：{dataDir}/msg/attach/{md5(talker)}/{YYYY-MM}/Img/{md5}.dat
+    QString resolveDatPath(const QString& talker, const QDateTime& msgTime,
+                           const QString& md5, const QString& sub = QStringLiteral("Img")) const;
+    // 尝试把图片附件解密成 QByteArray（成功 + 非空即视为成功）。
+    QByteArray decryptAttachImage(const QString& talker,
+                                  const QDateTime& msgTime,
+                                  const QString& md5,
+                                  QString* outPath = nullptr,
+                                  QString* outErr = nullptr);
+
+private slots:
+
+protected:
+    bool eventFilter(QObject* obj, QEvent* ev) override;
 
     // 控件
     QStackedWidget* m_detail       = nullptr;
@@ -64,4 +88,8 @@ private:
     int     m_renderedMsgCount = 0;                         // renderMessages 内部短路用
     // 分块渲染：标记当前正在追加的 talker，切换后丢弃旧块
     QString m_chunkAppendTalker;
+
+    // 图片解密上下文
+    QString    m_dataDir;                                   // wxid_xxx 根目录
+    QByteArray m_imageKey;                                  // 16 字节
 };

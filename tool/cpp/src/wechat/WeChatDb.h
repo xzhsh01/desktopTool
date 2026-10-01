@@ -50,6 +50,11 @@ public:
         QString attachExt;    // 扩展名 / 类型标记
         QString attachUrl;    // 链接 / 下载 URL
         QString attachMime;   // 消息子类型文本（appmsg/type）
+        // 图片/视频/文件附件的 md5（即 .dat 文件名）
+        //  - 4.x: 从 packed_info_data[8..40] 直接读
+        //  - 3.x: 从 StrContent XML 的 <img md5="..."> 或 <img midimgmd5="..."> 读
+        //  - type=3 / 47 时通常对应 msg/attach/<sessionMd5>/<YYYY-MM>/Img/<md5>.dat
+        QString attachMd5;
     };
 
     struct Contact {
@@ -91,6 +96,21 @@ public:
     // 返回 false 时错误信息在 lastError()
     bool ensureDecrypted();
     const QString& lastError() const { return m_lastError; }
+
+    // 数据目录（wxid_xxx 根目录，含 msg/attach/ 等）
+    const QString& dataDir() const { return m_dataDir; }
+    // 微信版本：3 / 4
+    int version() const { return m_version; }
+    // 解析图片附件 .dat 绝对路径（不存在返回空串）
+    // sub = "Img" / "Video" / "Audio" / "File"
+    QString resolveAttachPath(const QString& talker, const QDateTime& msgTime,
+                              const QString& md5, const QString& sub = QStringLiteral("Img")) const;
+    // 会话 md5 = md5(talker)，即 attach 目录的命名
+    static QString talkerMd5(const QString& talker);
+    // 从 4.x packed_info_data 提取 type 3/47 的图片 md5（byte[8..40]）
+    static QString extractImageMd5FromPacked(const QByteArray& packed);
+    // 从 3.x XML StrContent 提取图片 md5（<img md5/midimgmd5/cdnmidimgmd5/cdnthumbmd5>）
+    static QString extractImageMd5FromXml(const QString& xml);
 
     // 会话列表（按最后消息时间倒序）
     QList<ChatSession> loadSessions();
