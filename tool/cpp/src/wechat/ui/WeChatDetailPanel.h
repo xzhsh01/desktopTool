@@ -62,6 +62,7 @@ private:
     QByteArray decryptAttachImage(const QString& talker,
                                   const QDateTime& msgTime,
                                   const QString& md5,
+                                  int msgType = 0,
                                   QString* outPath = nullptr,
                                   QString* outErr = nullptr);
 

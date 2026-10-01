@@ -78,6 +78,30 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
+# zstd 1.5.2 (仅 decompress + 必要的 common，单线程) ——
+#   微信 4.x 把 message_content 用 zstd 压缩后存进 cache.sqlite，要解压才能拿到
+#   <emoji md5="..."/> 等 XML 元数据。third_party/zstd/ 通过
+#   scripts/setup_zstd.ps1 或手工 `tar -xzf` 解压 zstd-1.5.2 lib/{common,decompress} 取得。
+# ---------------------------------------------------------------------------
+add_library(zstd STATIC
+    third_party/zstd/common/entropy_common.c
+    third_party/zstd/common/error_private.c
+    third_party/zstd/common/fse_decompress.c
+    third_party/zstd/common/xxhash.c
+    third_party/zstd/common/zstd_common.c
+    third_party/zstd/decompress/huf_decompress.c
+    third_party/zstd/decompress/zstd_ddict.c
+    third_party/zstd/decompress/zstd_decompress.c
+    third_party/zstd/decompress/zstd_decompress_block.c
+)
+target_include_directories(zstd PUBLIC third_party/zstd)
+# 单线程编译（multi-thread 解压需要 pool.c/threading.c，我们没要）
+target_compile_definitions(zstd PRIVATE
+    ZSTD_MULTITHREAD=0
+    ZSTD_NO_UNUSED_FUNCTIONS=0
+)
+
+# ---------------------------------------------------------------------------
 # openssl_shim：OpenSSL 1.1 -> 3.x ABI 兼容垫片（libssh 静态库依赖）
 # 仅在需要 Qt 全量编译时构建（Qt-less 子集不需要）。
 # ---------------------------------------------------------------------------
@@ -259,6 +283,7 @@ target_link_libraries(bambooRat PRIVATE
     Qt6::Gui
     Qt6::Core
     sqlite3
+    zstd
     openssl_shim
     # 注: libssh.a 是按 WITH_ZLIB=OFF 编译的，不引用 deflate/inflate/gz_*；
     # Qt 6.12 自身又 QT_FEATURE_system_zlib=OFF，所以这里不再链接系统 zlib。
@@ -321,8 +346,29 @@ target_link_libraries(keytest PRIVATE
     Qt6::Sql
     OpenSSL::Crypto
     sqlite3
+    zstd
     crypt32
     psapi
+)
+endif()
+
+# ---------------------------------------------------------------------------
+# zstd_test: 验证 4.x emoji zstd 解压 + md5 提取 (临时)
+# ---------------------------------------------------------------------------
+if(TARGET Qt6::Core)
+add_executable(zstd_test
+    src/zstd_test.cpp
+    src/wechat/WeChatDb.cpp
+    src/core/Logger.cpp
+    src/core/Settings.cpp
+)
+target_include_directories(zstd_test PRIVATE src)
+target_link_libraries(zstd_test PRIVATE
+    Qt6::Core
+    Qt6::Sql
+    OpenSSL::Crypto
+    sqlite3
+    zstd
 )
 endif()
 

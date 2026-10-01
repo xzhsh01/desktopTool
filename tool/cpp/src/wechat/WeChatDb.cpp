@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QStandardPaths>
 #include <QDateTime>
 #include <QRegularExpression>
@@ -14,6 +15,8 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
+
+#include <zstd.h>
 
 #include "sqlite3.h"
 
@@ -170,6 +173,29 @@ QString WeChatDb::extractImageMd5FromXml(const QString& xml) {
     const auto m = kMd5Attr.match(xml);
     if (!m.hasMatch()) return {};
     return m.captured(1).toLower();
+}
+
+// 把 zstd 压缩的字节流解压成 UTF-8 字符串（用于解析 4.x 的 emoji XML 等）。
+// 失败时返回空串。sizeHint 为 0 时按压缩大小推一个够大的缓冲区；上层可传
+// approximate size 减少 realloc。
+QByteArray WeChatDb::decompressZstdText(const QByteArray& compressed) {
+    if (compressed.isEmpty()) return {};
+    if (compressed.size() < 4 || memcmp(compressed.constData(), kZstdMagic, 4) != 0)
+        return {};
+    const size_t srcSize = static_cast<size_t>(compressed.size());
+    unsigned long long expected = ZSTD_getFrameContentSize(compressed.constData(), srcSize);
+    size_t outCap;
+    if (expected == ZSTD_CONTENTSIZE_UNKNOWN || expected == ZSTD_CONTENTSIZE_ERROR) {
+        outCap = 64 * 1024;  // 兜底 64K；emoji XML 远小于此
+    } else {
+        outCap = static_cast<size_t>(expected);
+    }
+    QByteArray out(static_cast<int>(outCap), Qt::Uninitialized);
+    const size_t got = ZSTD_decompress(out.data(), outCap,
+                                       compressed.constData(), srcSize);
+    if (ZSTD_isError(got)) return {};
+    out.resize(static_cast<int>(got));
+    return out;
 }
 
 // ── 静态：密钥校验 ──────────────────────────────────────────────────────────
@@ -564,6 +590,22 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
         if (limit > 0) sql += QString(" LIMIT %1").arg(limit);
         for (const QString& db : dbs) {
             auto rows = runOn(db, sql, {});
+            // 4.x 的 type=47 (动画表情) message_content 是 zstd 压缩 XML；runQuery 因为
+            // 列声明是 TEXT 但内容是二进制，已经把原始字节替换成 kZstdMark 标记，md5 解析不到。
+            // 这里对当前 session 批量再查一次原始字节（按 server_id 映射），下面循环里按需解压。
+            QHash<qint64, QByteArray> zstdRawBySid;
+            {
+                const QString rawSql = QString(
+                    "SELECT server_id, message_content FROM %1 "
+                    "WHERE local_type = 47 AND length(message_content) >= 4").arg(tableName);
+                auto rawRows = runOn(db, rawSql, {});
+                for (const auto& rr : rawRows) {
+                    const qint64 sid = rr.value(0).toLongLong();
+                    // 当列类型是 TEXT 时 runQuery 返回 QString；toByteArray() 再 toUtf8() 是无损失的
+                    const QByteArray raw = rr.value(1).toByteArray();
+                    zstdRawBySid.insert(sid, raw);
+                }
+            }
             for (const auto& r : rows) {
                 ChatMessage m;
                 m.msgId = r.value(1).toLongLong();
@@ -587,9 +629,19 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
                 m.senderName = displayName(m.senderId);
                 m.content = content;
                 m.display = previewOf(m.type, 0, content, QString());
-                // 提取图片附件 md5（type 3 / 47 从 packed_info_data 直接读）
+                // 提取图片附件 md5
+                //   - type 3 从 packed_info_data（hex @ byte[8..40]）直接读
+                //   - type 47 emoji 4.x 的 packed 只有 4~6 字节、不含 md5；要解压 zstd XML 取 <emoji md5>
                 if (m.type == 3 || m.type == 47) {
                     m.attachMd5 = extractImageMd5FromPacked(packed);
+                }
+                if (m.type == 47 && m.attachMd5.isEmpty()
+                    && content == kZstdMark
+                    && zstdRawBySid.contains(m.msgId)) {
+                    const QByteArray plain = decompressZstdText(zstdRawBySid.value(m.msgId));
+                    if (!plain.isEmpty()) {
+                        m.attachMd5 = extractImageMd5FromXml(QString::fromUtf8(plain));
+                    }
                 }
                 out.append(m);
             }
@@ -662,6 +714,16 @@ QString WeChatDb::resolveAttachPath(const QString& talker, const QDateTime& msgT
     p = base + md5 + "_t.dat";
     if (QFileInfo::exists(p)) return p;
     return base + md5 + ".dat";  // 返回主路径，由调用方决定如何处理 missing
+}
+
+// type=47 动画表情文件位于 dataDir/business/emoticon/Persist/<md5 前两位>/<md5>
+// （无扩展名；4.x 里 GIF/JPG 与正文一致，未走 .dat 加密路径）。
+QString WeChatDb::resolveEmoticonPath(const QString& md5) const {
+    if (m_dataDir.isEmpty() || md5.size() < 2) return {};
+    const QString p = m_dataDir + "/business/emoticon/Persist/"
+                    + md5.left(2) + "/" + md5;
+    if (QFileInfo::exists(p)) return p;
+    return p;
 }
 
 // ── 联系人 ───────────────────────────────────────────────────────────────────

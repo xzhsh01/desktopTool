@@ -5,6 +5,7 @@
 #include <QCryptographicHash>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDebug>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
@@ -19,6 +20,7 @@
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSet>
 #include <QStackedWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -60,6 +62,7 @@ void WeChatDetailPanel::setImageKey(const QByteArray& key) {
 QByteArray WeChatDetailPanel::decryptAttachImage(const QString& talker,
                                                  const QDateTime& msgTime,
                                                  const QString& md5,
+                                                 int msgType,
                                                  QString* outPath, QString* outErr) {
     auto err = [&](const QString& s) {
         if (outErr) *outErr = s;
@@ -70,6 +73,23 @@ QByteArray WeChatDetailPanel::decryptAttachImage(const QString& talker,
         return err(QStringLiteral("image key not set (size=%1)").arg(m_imageKey.size()));
     if (md5.isEmpty() || talker.isEmpty() || !msgTime.isValid())
         return err(QStringLiteral("missing md5/talker/time"));
+    // type=47 动画表情走 business/emoticon/Persist/<xx>/<md5>（无扩展名；尚未实现解密 → 直接读原字节）
+    if (msgType == 47) {
+        const QString emoPath = m_dataDir + "/business/emoticon/Persist/"
+                              + md5.left(2) + "/" + md5;
+        if (outPath) *outPath = emoPath;
+        if (QFile::exists(emoPath)) {
+            QFile f(emoPath);
+            if (f.open(QIODevice::ReadOnly)) {
+                const QByteArray raw = f.readAll();
+                f.close();
+                // 4.x 表情文件使用了独立加密方案（首字节 0x09，非 V2 magic），
+                // 暂直接返回原字节尝试加载——若 QImage 识别出 GIF/JPEG/PNG 即显示，否则由调用方兜底。
+                if (!raw.isEmpty()) return raw;
+            }
+        }
+        return err(QStringLiteral("emoji file not found: %1").arg(emoPath));
+    }
     const QString datPath = resolveDatPath(talker, msgTime, md5, QStringLiteral("Img"));
     if (outPath) *outPath = datPath;
     if (datPath.isEmpty() || !QFile::exists(datPath))
@@ -444,10 +464,24 @@ QWidget* WeChatDetailPanel::makeBubble(const QVariantMap& m) {
         const QDateTime msgDt = msgTimeTs > 0 ? QDateTime::fromSecsSinceEpoch(msgTimeTs) : QDateTime();
         const bool isImage = (type == 3 || type == 47);
         bool imageDecoded = false;
+        if (isImage) {
+            static QSet<QString> s_loggedOnce;   // 每个 md5 只记一条，避免刷屏
+            const QString logKey = attachMd5.isEmpty() ? QStringLiteral("<empty>") : attachMd5;
+            if (!s_loggedOnce.contains(logKey)) {
+                s_loggedOnce.insert(logKey);
+                qInfo().noquote()
+                    << QStringLiteral("[wechat][img] type=%1 subType=%2 md5=%3 ctx(dataDir=%4,key=%5B) timeValid=%6")
+                           .arg(type).arg(subType)
+                           .arg(attachMd5.isEmpty() ? QStringLiteral("<empty>") : attachMd5.left(8))
+                           .arg(m_dataDir.isEmpty() ? QStringLiteral("<empty>") : QStringLiteral("<set>"))
+                           .arg(m_imageKey.size())
+                           .arg(msgDt.isValid());
+            }
+        }
         if (isImage && !attachMd5.isEmpty() && hasImageContext() && msgDt.isValid()) {
             QString err;
             QString datPath;
-            QByteArray plain = decryptAttachImage(m_currentTalker, msgDt, attachMd5, &datPath, &err);
+            QByteArray plain = decryptAttachImage(m_currentTalker, msgDt, attachMd5, type, &datPath, &err);
             if (!plain.isEmpty()) {
                 QImage img;
                 if (img.loadFromData(plain)) {

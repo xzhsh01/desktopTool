@@ -105,12 +105,16 @@ public:
     // sub = "Img" / "Video" / "Audio" / "File"
     QString resolveAttachPath(const QString& talker, const QDateTime& msgTime,
                               const QString& md5, const QString& sub = QStringLiteral("Img")) const;
+    // 4.x 动画表情文件路径：business/emoticon/Persist/<xx>/<md5>（无扩展名）
+    QString resolveEmoticonPath(const QString& md5) const;
     // 会话 md5 = md5(talker)，即 attach 目录的命名
     static QString talkerMd5(const QString& talker);
     // 从 4.x packed_info_data 提取 type 3/47 的图片 md5（byte[8..40]）
     static QString extractImageMd5FromPacked(const QByteArray& packed);
     // 从 3.x XML StrContent 提取图片 md5（<img md5/midimgmd5/cdnmidimgmd5/cdnthumbmd5>）
     static QString extractImageMd5FromXml(const QString& xml);
+    // 解压 4.x message_content（zstd 压缩）成 UTF-8 字节；失败返回空
+    static QByteArray decompressZstdText(const QByteArray& compressed);
 
     // 会话列表（按最后消息时间倒序）
     QList<ChatSession> loadSessions();

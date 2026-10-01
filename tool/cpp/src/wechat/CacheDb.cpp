@@ -108,7 +108,10 @@ void CacheDb::parseAttachMeta(int type, int subType,
     m["attachExt"]   = QString();
     m["attachUrl"]   = QString();
     m["attachMime"]  = QString();
-    m["attachMd5"]   = QString();
+    // attachMd5 不要无条件清空：4.x 路径下 WeChatSyncWorker 在调用本函数前
+    // 已经从 packed_info_data 提取了正确的 md5 并写到 vm["attachMd5"]；
+    // 这里一旦清空，type 3/47 的 setIfEmpty 会用对 zstd 压缩内容解析不到的
+    // XML md5 覆盖（结果是空），导致图片/动画表情渲染管线找不到 dat。
     if (content.isEmpty()) return;
 
     auto pickNum = [](const QString& s) -> qint64 {
