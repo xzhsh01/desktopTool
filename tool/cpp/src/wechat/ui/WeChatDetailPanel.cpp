@@ -1,5 +1,6 @@
 #include "wechat/ui/WeChatDetailPanel.h"
 #include "app/Theme.h"
+#include "core/Logger.h"
 #include "wechat/WeChatImageDecoder.h"
 
 #include <QCryptographicHash>
@@ -9,6 +10,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QDir>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QKeyEvent>
@@ -73,22 +75,34 @@ QByteArray WeChatDetailPanel::decryptAttachImage(const QString& talker,
         return err(QStringLiteral("image key not set (size=%1)").arg(m_imageKey.size()));
     if (md5.isEmpty() || talker.isEmpty() || !msgTime.isValid())
         return err(QStringLiteral("missing md5/talker/time"));
-    // type=47 动画表情走 business/emoticon/Persist/<xx>/<md5>（无扩展名；尚未实现解密 → 直接读原字节）
+    // type=47 动画表情走 cache/<yyyy-mm>/Emoticon/<xx>/<md5>（无扩展名；AES-128-ECB 用 imageKey 解密）
+    // 4.x 整文件 = ECB(plain)，无 V2 magic，文件大小为 16 字节倍数（无 padding）
     if (msgType == 47) {
-        const QString emoPath = m_dataDir + "/business/emoticon/Persist/"
-                              + md5.left(2) + "/" + md5;
-        if (outPath) *outPath = emoPath;
-        if (QFile::exists(emoPath)) {
-            QFile f(emoPath);
-            if (f.open(QIODevice::ReadOnly)) {
-                const QByteArray raw = f.readAll();
-                f.close();
-                // 4.x 表情文件使用了独立加密方案（首字节 0x09，非 V2 magic），
-                // 暂直接返回原字节尝试加载——若 QImage 识别出 GIF/JPEG/PNG 即显示，否则由调用方兜底。
-                if (!raw.isEmpty()) return raw;
-            }
+        // 4.x emoji 路径：cache/<year>-<month>/Emoticon/<md5[0:2]>/<md5>；失败再回退 business/emoticon/Persist/
+        QStringList candidates;
+        QDir base(m_dataDir + "/cache");
+        const QStringList ymDirs = base.entryList(QStringList{"*"}, QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QString& ymd : ymDirs) {
+            candidates << (m_dataDir + "/cache/" + ymd + "/Emoticon/"
+                           + md5.left(2) + "/" + md5);
         }
-        return err(QStringLiteral("emoji file not found: %1").arg(emoPath));
+        candidates << (m_dataDir + "/business/emoticon/Persist/" + md5.left(2) + "/" + md5);
+        for (const QString& emoPath : candidates) {
+            if (!QFile::exists(emoPath)) continue;
+            if (outPath) *outPath = emoPath;
+            QFile f(emoPath);
+            if (!f.open(QIODevice::ReadOnly)) continue;
+            const QByteArray raw = f.readAll();
+            f.close();
+            if (raw.isEmpty()) continue;
+            // 用 imageKey AES-128-ECB 解密（offset 0）；key 错会回退到原字节
+            QByteArray plain = WeChatImageDecoder::decryptEmoji(raw, m_imageKey);
+            if (!plain.isEmpty()) return plain;
+            // key 错或格式非图片 — 返回原字节兜底（QImage 会识别出非图片而走原卡片）
+            return raw;
+        }
+        return err(QStringLiteral("emoji file not found: md5=%1 (tried %2 paths)")
+                       .arg(md5).arg(candidates.size()));
     }
     const QString datPath = resolveDatPath(talker, msgTime, md5, QStringLiteral("Img"));
     if (outPath) *outPath = datPath;
@@ -469,21 +483,35 @@ QWidget* WeChatDetailPanel::makeBubble(const QVariantMap& m) {
             const QString logKey = attachMd5.isEmpty() ? QStringLiteral("<empty>") : attachMd5;
             if (!s_loggedOnce.contains(logKey)) {
                 s_loggedOnce.insert(logKey);
-                qInfo().noquote()
-                    << QStringLiteral("[wechat][img] type=%1 subType=%2 md5=%3 ctx(dataDir=%4,key=%5B) timeValid=%6")
-                           .arg(type).arg(subType)
-                           .arg(attachMd5.isEmpty() ? QStringLiteral("<empty>") : attachMd5.left(8))
-                           .arg(m_dataDir.isEmpty() ? QStringLiteral("<empty>") : QStringLiteral("<set>"))
-                           .arg(m_imageKey.size())
-                           .arg(msgDt.isValid());
+                Logger::instance().info(
+                    QStringLiteral("[wechat][img] type=%1 subType=%2 md5=%3 ctx(dataDir=%4,key=%5B) timeValid=%6 ctxOk=%7")
+                        .arg(type).arg(subType)
+                        .arg(attachMd5.isEmpty() ? QStringLiteral("<empty>") : attachMd5.left(8))
+                        .arg(m_dataDir.isEmpty() ? QStringLiteral("<empty>") : QStringLiteral("<set>"))
+                        .arg(m_imageKey.size())
+                        .arg(msgDt.isValid())
+                        .arg(hasImageContext() ? "y" : "n"),
+                    "wechat");
             }
         }
         if (isImage && !attachMd5.isEmpty() && hasImageContext() && msgDt.isValid()) {
             QString err;
             QString datPath;
             QByteArray plain = decryptAttachImage(m_currentTalker, msgDt, attachMd5, type, &datPath, &err);
+            if (plain.isEmpty()) {
+                Logger::instance().warn(
+                    QStringLiteral("[wechat][img] decrypt failed: type=%1 md5=%2 err=%3")
+                        .arg(type).arg(attachMd5.left(8)).arg(err.isEmpty() ? "<empty>" : err),
+                    "wechat");
+            }
             if (!plain.isEmpty()) {
                 QImage img;
+                if (!img.loadFromData(plain)) {
+                    Logger::instance().warn(
+                        QStringLiteral("[wechat][img] loadFromData failed: type=%1 md5=%2 size=%3 (decryption ok but bytes not an image — likely wrong key)")
+                        .arg(type).arg(attachMd5.left(8)).arg(plain.size()),
+                        "wechat");
+                }
                 if (img.loadFromData(plain)) {
                     // 等比缩放到 maxSide
                     QPixmap pm = QPixmap::fromImage(img);

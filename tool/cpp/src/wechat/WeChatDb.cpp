@@ -2,6 +2,7 @@
 #include "CacheDb.h"
 #include "core/Logger.h"
 
+#include <cstdio>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -645,38 +646,13 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
                 if (m.type == 3 || m.type == 47) {
                     m.attachMd5 = extractImageMd5FromPacked(packed);
                 }
-                // 诊断：每条 type=3/47 消息的提取结果（每 session 只打 1 条）
-                if ((m.type == 3 || m.type == 47) && zstdRawBySid.contains(m.msgId) == false
-                    && m.type == 47) {
-                    static int s_logN = 0;
-                    if (s_logN < 3) {
-                        ++s_logN;
-                        qInfo().noquote()
-                            << QStringLiteral("[wechat.db][emoji.diag] sid=%1 type=%2 packed=%3B zstdSid=%4 content.isZstdMark=%5 contentLen=%6 packedMd5=%7")
-                                .arg(m.msgId).arg(m.type)
-                                .arg(packed.size())
-                                .arg(zstdRawBySid.contains(m.msgId) ? "yes" : "NO")
-                                .arg(content == kZstdMark ? "yes" : "no")
-                                .arg(content.size())
-                                .arg(m.attachMd5.isEmpty() ? "<empty>" : m.attachMd5);
-                    }
-                }
+                // 诊断：type=47 emoji 处理路径
                 if (m.type == 47 && m.attachMd5.isEmpty()
-                    && content == kZstdMark
                     && zstdRawBySid.contains(m.msgId)) {
-                    const QByteArray rawZstd = zstdRawBySid.value(m.msgId);
-                    const QByteArray plain = decompressZstdText(rawZstd);
-                    static QSet<qint64> s_logged;
-                    if (!s_logged.contains(m.msgId)) {
-                        s_logged.insert(m.msgId);
-                        qInfo().noquote()
-                            << QStringLiteral("[wechat.db][emoji] sid=%1 raw=%2B zstdMagic=%3 plain=%4B md5=%5")
-                                .arg(m.msgId)
-                                .arg(rawZstd.size())
-                                .arg(rawZstd.left(4).toHex())
-                                .arg(plain.size())
-                                .arg(m.attachMd5);
-                    }
+                    // 4.x emoji md5 在 zstd(message_content) 解压后的 XML 里
+                    // runQuery 把 zstd 字节当 UTF-8 QString 解读，content 实际是乱码，
+                    // 所以不再依赖 content == kZstdMark 的标志，直接拿 zstdRawBySid 原始字节解压
+                    const QByteArray plain = decompressZstdText(zstdRawBySid.value(m.msgId));
                     if (!plain.isEmpty()) {
                         m.attachMd5 = extractImageMd5FromXml(QString::fromUtf8(plain));
                     }
