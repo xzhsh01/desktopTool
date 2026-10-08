@@ -76,10 +76,4 @@ public:
     static bool setSyncState(const QString& accId, const QString& sourcePath,
                              qint64 size, qint64 mtime);
     static bool clearSyncState(const QString& accId);
-
-    // ── 内容指纹（信号层去重：worker 写完后对比 hash，未变则不 emit UI） ──
-    // kind: "sessions" / "contacts"
-    static QString getContentHash(const QString& accId, const QString& kind);
-    static bool    setContentHash(const QString& accId, const QString& kind,
-                                  const QString& hash);
 };
