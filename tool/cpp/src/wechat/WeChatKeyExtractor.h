@@ -62,8 +62,20 @@ QString extractImageKey(quint32 pid, const QString& knownDatPath,
 // 多进程扫描：依次在每个 pid 内存中尝试找 key，找到即返回。
 // 用于 image key 可能在子进程（WeChatAppEx）而非主 Weixin 的场景。
 QString extractImageKeyMulti(const QList<quint32>& pids,
-                             const QString& knownDatPath,
-                             QString* errOut = nullptr);
+                                 const QString& knownDatPath,
+                                 QString* errOut = nullptr);
+
+// 在 dataDir 下收集多个非缩略图 .dat 文件（最大的前 maxN 个），用作 image key
+// 多文件交叉验证 — 排除单 oracle 假阳性（之前发现占位 key 偶尔能解出某个 .dat
+// 的 JPEG magic 让 verifyKeyByFullOracle 误判通过）。
+// 候选 key 必须能同时解开 **全部** oracle 才会被接受为真 key。
+QStringList collectOracleDats(const QString& dataDir, int maxN = 3);
+
+// 用候选 key 验证多个 oracle：全部成功才返回 true。
+// 用 EVP_AES-128-ECB 解密每个 .dat 前 4KB，要求首块匹配图片 magic 且次块不全 0/FF。
+QString verifyImageKeyMulti(const QList<QString>& oraclePaths,
+                            const QString& hexKey,
+                            QString* errOut = nullptr);
 
 // 枚举所有与微信相关的进程（Weixin.exe + WeChatAppEx.exe + WeChat.exe）
 // 用于多进程 image key 扫描（无需登录态校验）

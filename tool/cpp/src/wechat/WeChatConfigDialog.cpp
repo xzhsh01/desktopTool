@@ -525,7 +525,9 @@ QString WeChatConfigDialog::verifyDbFor(const QString& dir, const QString& versi
 }
 
 // 在 dataDir 下找一个非缩略图的 V2 .dat 用于图片 key 提取 oracle。
-// 优先选最大的（信息熵高 → 解密命中率更高）。
+// 优先选**最近修改**的（用户刚发的图）— 因为 WeChat 4.1.10.31+ 的图片 key
+// 只在图片被实际查看时驻留内存，最近修改的 .dat 最有可能对应"当前正被查看"的图。
+// 同时要求文件 ≥ 8KB（保证有足够密文做 oracle；缩略图通常 < 5KB）。
 QString WeChatConfigDialog::pickOracleDat(const QString& dataDir) {
     if (dataDir.isEmpty() || !QFile::exists(dataDir)) return {};
     QDir imgRoot(dataDir + "/msg/attach");
@@ -544,15 +546,22 @@ QString WeChatConfigDialog::pickOracleDat(const QString& dataDir) {
             const QFileInfoList dats = imgDir.entryInfoList(
                 QStringList() << "*.dat", QDir::Files, QDir::Time);
             for (const QFileInfo& d : dats) {
-                if (!d.fileName().endsWith("_t.dat")) allDats.append(d);
+                // 跳过缩略图和 hd 缩略图
+                if (d.fileName().endsWith("_t.dat") || d.fileName().endsWith("_h.dat"))
+                    continue;
+                // 跳过太小的文件（无法做可靠 oracle）
+                if (d.size() < 8192) continue;
+                allDats.append(d);
                 if (allDats.size() >= 5000) break;
             }
         }
     }
     if (allDats.isEmpty()) return {};
-    // 选最大文件
+    // 按修改时间降序：最新的在前 → 用户最近发的图优先
     std::sort(allDats.begin(), allDats.end(),
-              [](const QFileInfo& a, const QFileInfo& b) { return a.size() > b.size(); });
+              [](const QFileInfo& a, const QFileInfo& b) {
+                  return a.lastModified() > b.lastModified();
+              });
     return allDats.first().absoluteFilePath();
 }
 

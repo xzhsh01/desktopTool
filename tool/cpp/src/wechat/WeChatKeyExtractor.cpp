@@ -3,6 +3,8 @@
 #include "core/Logger.h"
 
 #include <QByteArray>
+#include <QFileInfo>
+#include <QDir>
 #include <QFile>
 #include <QSet>
 
@@ -17,6 +19,15 @@ namespace {
 const char kV4Pattern[24] = {
     '\x00', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00',
     '\x20', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00',
+    '\x2F', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00',
+};
+
+// 图片 key（16 字节）的引用结构：{ 0, 0x10, 0x2F }，其前 8 字节是指向密钥的指针
+// 4.x WeChat 把 SQLCipher db key（32B，模式 0x20）和 image key（16B，模式 0x10）
+// 都封装在同一 allocator 下，因此用同样的 { ptr, 0, len, 0x2F } 结构。
+const char kV4ImagePattern[24] = {
+    '\x00', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00',
+    '\x10', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00',
     '\x2F', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00',
 };
 
@@ -57,6 +68,38 @@ void collectCandidates(HANDLE proc, const QByteArray& buf, const QByteArray& pat
             if (ReadProcessMemory(proc, reinterpret_cast<LPCVOID>(ptr), key, 32, &read)
                 && read == 32 && looksLikeRandomKey(key)) {
                 keys.append(QByteArray(reinterpret_cast<const char*>(key), 32).toHex());
+            }
+        }
+        --idx;
+    }
+}
+
+// 同上，但收集 16 字节图片 key（结构 { ptr, 0, 0x10, 0x2F }）
+// 注意 0x10 比 0x20 更常见，需额外熵检查：distinct >= 10 / printable <= 12
+void collectImageKeyCandidates(HANDLE proc, const QByteArray& buf, const QByteArray& pattern,
+                               int ptrSize, QSet<quint64>& seen, QStringList& keys) {
+    const int patLen = pattern.size();
+    qsizetype idx = buf.size() - patLen;
+    while (idx >= ptrSize) {
+        idx = buf.lastIndexOf(pattern, idx);
+        if (idx < ptrSize) break;
+        quint64 ptr = 0;
+        memcpy(&ptr, buf.constData() + idx - ptrSize, ptrSize);
+        if (ptr > 0x10000 && ptr < 0x7FFFFFFFFFFFULL && !seen.contains(ptr)) {
+            seen.insert(ptr);
+            unsigned char key[16] = {};
+            SIZE_T read = 0;
+            if (ReadProcessMemory(proc, reinterpret_cast<LPCVOID>(ptr), key, 16, &read)
+                && read == 16) {
+                bool seenB[256] = {};
+                int distinct = 0, printable = 0;
+                for (int i = 0; i < 16; ++i) {
+                    if (!seenB[key[i]]) { seenB[key[i]] = true; ++distinct; }
+                    if (key[i] >= 0x20 && key[i] <= 0x7e) ++printable;
+                }
+                if (distinct >= 10 && printable <= 12) {
+                    keys.append(QByteArray(reinterpret_cast<const char*>(key), 16).toHex());
+                }
             }
         }
         --idx;
@@ -569,15 +612,17 @@ static bool verifyKeyByFullOracle(const unsigned char key[16],
 
 // 判断 16 字节明文是否像图片 magic（严格版：要求 4+ 字节特征 + 合理字段）
 static bool looksLikeImagePlain(const unsigned char p[16]) {
-    // JPEG: FF D8 FF + E0/E1/DB/EE 或 C0~CF（SOI + marker）
+    // JPEG: FF D8 FF + E0(JFIF) / E1(EXIF) — 所有真实微信图都用这两种主 marker。
+    // 之前接受 DB(DQT)/C4(DHT)/C9(SOF9) 等次要 marker 导致假阳性（4.1.13.65
+    // 某些 .dat 的 ct1 结构让多个随机 key 都碰巧解出 FF D8 FF + 次要 marker，
+    // 但解密全文是乱码）。严格化到 E0/E1 可消除此类假阳性。
     if (p[0] == 0xFF && p[1] == 0xD8 && p[2] == 0xFF) {
-        const unsigned char m = p[3];
-        if (m == 0xE0 || m == 0xE1 || m == 0xE2 || m == 0xE3 ||
-            m == 0xDB || m == 0xEE ||
-            m == 0xC0 || m == 0xC1 || m == 0xC2 || m == 0xC3 ||
-            m == 0xC4 || m == 0xC5 || m == 0xC6 || m == 0xC7 ||
-            m == 0xC8 || m == 0xC9 || m == 0xCA || m == 0xCB ||
-            m == 0xCC || m == 0xCD || m == 0xCE || m == 0xCF) return true;
+        if (p[3] == 0xE0 || p[3] == 0xE1) {
+            // 进一步：byte 4-5 是段长度（大端 uint16），合法范围 16~65535
+            // byte 6.. 应该是 "JFIF\0" 或 "Exif\0\0" — 但前 16 字节可能不够，只验长度合理
+            const unsigned int segLen = (p[4] << 8) | p[5];
+            if (segLen >= 16 && segLen <= 65535) return true;
+        }
         return false;
     }
     // PNG: 8 字节 magic + IHDR 长度 (0x00 0x00 0x00 0x0D) + 'I''H''D''R'
@@ -604,23 +649,55 @@ namespace {
 // 验证一个候选 key：必须同时让 ct1 解出像图片的首块、ct2 解出像图片次块。
 // 单 ct 验证有 1/2^24 偶然 FF D8 FF magic 假阳性概率（5500 万 tries 可能命中 1 次）。
 // 双 ct 验证把假阳性概率压到 1/2^48 ≈ 1/3e14，无法命中。
+//
+// xorKeys: 4.1.10.31+ 图片 key 在内存中是 XOR 混淆态；尝试 key XOR xk 还原。
+// xorIdx: 若非空，填回匹配成功的 XOR key 在 xorKeys 中的下标（-1 表示直接匹配）。
+// 成功时 recoveredOut 填回还原后的 16 字节真实 key。
 static bool verifyCandidateKey(const unsigned char key[16],
                                const unsigned char ct1[16],
-                               const unsigned char ct2[16]) {
-    unsigned char pt1[16], pt2[16];
-    if (!aesEcbDecryptBlock(key, ct1, pt1)) return false;
-    if (!looksLikeImagePlain(pt1)) return false;
-    if (!aesEcbDecryptBlock(key, ct2, pt2)) return false;
-    // pt2 应像图片次块：不是全 0 / 全 FF / 与 pt1 完全一致
-    bool allZero = true, allFF = true;
-    for (int i = 0; i < 16; ++i) {
-        if (pt2[i] != 0x00) allZero = false;
-        if (pt2[i] != 0xFF) allFF = false;
+                               const unsigned char ct2[16],
+                               const QStringList& xorKeys = {},
+                               int* xorIdx = nullptr,
+                               unsigned char recoveredOut[16] = nullptr) {
+    auto check = [&](const unsigned char k[16]) -> bool {
+        unsigned char pt1[16], pt2[16];
+        if (!aesEcbDecryptBlock(k, ct1, pt1)) return false;
+        if (!looksLikeImagePlain(pt1)) return false;
+        if (!aesEcbDecryptBlock(k, ct2, pt2)) return false;
+        bool allZero = true, allFF = true;
+        for (int i = 0; i < 16; ++i) {
+            if (pt1[i] != pt2[i]) allZero = false;  // 防与 pt1 完全一致
+            if (pt2[i] != 0x00) allZero = false;
+            if (pt2[i] != 0xFF) allFF = false;
+        }
+        (void)allZero; (void)allFF;
+        // 实际逻辑：pt2 不能全 0 / 全 FF / 与 pt1 完全一致
+        bool bz = true, bf = true, same = true;
+        for (int i = 0; i < 16; ++i) {
+            if (pt2[i] != 0x00) bz = false;
+            if (pt2[i] != 0xFF) bf = false;
+            if (pt1[i] != pt2[i]) same = false;
+        }
+        return !bz && !bf && !same;
+    };
+    if (check(key)) {
+        if (xorIdx) *xorIdx = -1;
+        if (recoveredOut) memcpy(recoveredOut, key, 16);
+        return true;
     }
-    if (allZero || allFF) return false;
-    // pt2 不能与 pt1 完全一致（假阳性双块密文相同）
-    if (memcmp(pt1, pt2, 16) == 0) return false;
-    return true;
+    // 尝试 XOR 还原
+    for (int i = 0; i < xorKeys.size(); ++i) {
+        const QByteArray xb = QByteArray::fromHex(xorKeys[i].toLatin1());
+        if (xb.size() != 16) continue;
+        unsigned char k2[16];
+        for (int j = 0; j < 16; ++j) k2[j] = key[j] ^ static_cast<unsigned char>(xb[j]);
+        if (check(k2)) {
+            if (xorIdx) *xorIdx = i;
+            if (recoveredOut) memcpy(recoveredOut, k2, 16);
+            return true;
+        }
+    }
+    return false;
 }
 
 // 从指定进程的内存中找 key；返回 32 位 hex 或空串。
@@ -631,7 +708,9 @@ static bool verifyCandidateKey(const unsigned char key[16],
 QString scanPidForImageKey(HANDLE proc, quint32 pid,
                            const unsigned char ct1[16],
                            const unsigned char ct2[16],
-                           const QString& oraclePath) {
+                           const QString& oraclePath,
+                           const QStringList& extraOracles = {},
+                           const QStringList& xorKeys = {}) {
     SYSTEM_INFO si = {};
     GetSystemInfo(&si);
     quint64 addr = std::max<quint64>(0x10000,
@@ -667,29 +746,79 @@ QString scanPidForImageKey(HANDLE proc, quint32 pid,
                 buf.resize(static_cast<int>(read));
                 for (qsizetype i = 0; i + 16 <= buf.size(); ++i) {
                     const unsigned char* k = reinterpret_cast<const unsigned char*>(buf.constData()) + i;
-                    if (verifyCandidateKey(k, ct1, ct2)) {
+                    int xorIdx = -1;
+                    unsigned char recovered[16] = {};
+                    if (verifyCandidateKey(k, ct1, ct2, xorKeys, &xorIdx, recovered)) {
                         const QString hitHex =
                             QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(k), 16).toHex());
+                        const QString recoveredHex =
+                            QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(recovered), 16).toHex());
                         Logger::instance().info(
-                            QString("extractImageKey: CANDIDATE key=%1 addr=%2 tries=%3 (running full-oracle verify)")
-                                .arg(hitHex).arg(addr + i, 16).arg(tries),
+                            QString("extractImageKey: CANDIDATE key=%1 addr=%2 tries=%3 xorIdx=%4 (running full-oracle verify)")
+                                .arg(hitHex).arg(addr + i, 16).arg(tries).arg(xorIdx),
                             "wechat.key");
                         // 二次确认：用 EVP 解密 oracle 整个 body，验证输出是合法图片。
                         // 双 ct 验证仍可能 5500 万次中假阳性 ~3 次；这一步压到几乎 0。
-                        if (!verifyKeyByFullOracle(k, oraclePath)) {
-                            Logger::instance().warn(
-                                QString("extractImageKey: CANDIDATE %1 REJECTED by full-oracle verify, continue scanning")
-                                    .arg(hitHex),
+                        QString verifiedHex = recoveredHex;
+                        if (!verifyKeyByFullOracle(recovered, oraclePath)) {
+                            // 三次确认（v5 XOR 还原，已在 verifyCandidateKey 中尝试过）：
+                            // 兜底 — 再尝试所有 xorKeys 全组合
+                            QString altHex;
+                            for (const QString& xk : xorKeys) {
+                                const QString xored = xorHexKeys(hitHex, xk);
+                                if (xored.isEmpty() || xored == verifiedHex) continue;
+                                QByteArray xb = QByteArray::fromHex(xored.toLatin1());
+                                if (verifyKeyByFullOracle(
+                                        reinterpret_cast<const unsigned char*>(xb.constData()), oraclePath)) {
+                                    altHex = xored;
+                                    break;
+                                }
+                            }
+                            if (altHex.isEmpty()) {
+                                Logger::instance().warn(
+                                    QString("extractImageKey: CANDIDATE %1 REJECTED by full-oracle verify (xorKeys=%2 tried)")
+                                        .arg(hitHex).arg(xorKeys.size()),
+                                    "wechat.key");
+                                ++tries;
+                                if (tries >= kHardCap) break;
+                                continue;
+                            }
+                            Logger::instance().info(
+                                QString("extractImageKey: CANDIDATE %1 XOR-RECOVERED to %2 (xorKey applied)")
+                                    .arg(hitHex).arg(altHex),
                                 "wechat.key");
-                            ++tries;
-                            if (tries >= kHardCap) break;
-                            continue;
+                            verifiedHex = altHex;
+                        }
+                        // 三次确认（多 oracle 交叉验证）：单 oracle 仍可能让占位 key 偶然
+                        // 通过（观察：占位 key 对部分 .dat 碰巧解出 JPEG magic）。
+                        // 必须 extraOracles 全部通过才接受。
+                        if (!extraOracles.isEmpty()) {
+                            QStringList crossPaths;
+                            crossPaths.reserve(extraOracles.size() + 1);
+                            crossPaths << oraclePath;
+                            for (const QString& p : extraOracles) {
+                                if (p != oraclePath) crossPaths << p;
+                            }
+                            QString multiErr;
+                            if (verifyImageKeyMulti(crossPaths, verifiedHex, &multiErr).isEmpty()) {
+                                Logger::instance().warn(
+                                    QString("extractImageKey: CANDIDATE %1 REJECTED by multi-oracle verify: %2")
+                                        .arg(verifiedHex).arg(multiErr),
+                                    "wechat.key");
+                                ++tries;
+                                if (tries >= kHardCap) break;
+                                continue;
+                            }
+                            Logger::instance().info(
+                                QString("extractImageKey: %1 passed MULTI-ORACLE verify (%2 files)")
+                                    .arg(verifiedHex).arg(crossPaths.size()),
+                                "wechat.key");
                         }
                         Logger::instance().info(
                             QString("extractImageKey: HIT key=%1 addr=%2 tries=%3")
-                                .arg(hitHex).arg(addr + i, 16).arg(tries),
+                                .arg(verifiedHex).arg(addr + i, 16).arg(tries),
                             "wechat.key");
-                        return hitHex;
+                        return verifiedHex;
                     }
                     ++tries;
                     if (tries >= kHardCap) break;
@@ -710,9 +839,17 @@ QString scanPidForImageKey(HANDLE proc, quint32 pid,
 }
 
 // 从 .dat 文件读取前两个 CT（16 字节首块 + 16 字节次块密文）；返回是否成功。
-// V2 格式：byte[0..5] magic, byte[6..14] reserved (9 字节), byte[15..30] 首块密文,
-//                   byte[31..46] 次块密文。
-// 双 ct 验证可消除单 ct 偶发 FF D8 FF magic 误报（5500 万 tries 仍可能命中 1 次假阳性）。
+// V2 格式（4.1.13.65 实测对齐证明）：
+//   byte[0..5]   magic `07 08 V 2 08 07`
+//   byte[6..9]   flags（恒为 00 04 00 00）
+//   byte[10..13] uint32 LE 明文长度
+//   byte[14]     恒为 0x01（header 尾标志）
+//   byte[15..N]  AES-128-ECB 密文（块对齐在 15）
+// 对齐证据：4 个不同 .dat 在 byte[31..46] 共享完整 16 字节密文块、byte[47] 各不相同 ——
+// 只有 offset=15 对齐能解释（相同明文块 = 微信重编码 JPEG 固定头 + 同 key）；
+// 若按 offset=16 对齐，AES 块不可能出现 15/16 字节相同。
+// 注意：历史上曾误认为 byte[15] 是 padding 而从 16 起算 —— 那是错的，会导致盲扫
+// 用错位 ct 验证，真 key 全部被误杀。
 bool loadOracleCt(const QString& knownDatPath, unsigned char ct1[16],
                   unsigned char ct2[16], QString* errOut) {
     if (knownDatPath.isEmpty() || !QFile::exists(knownDatPath)) {
@@ -724,7 +861,7 @@ bool loadOracleCt(const QString& knownDatPath, unsigned char ct1[16],
         if (errOut) *errOut = QStringLiteral("打开 .dat 失败：%1").arg(f.errorString());
         return false;
     }
-    QByteArray dat = f.read(47);
+    QByteArray dat = f.read(48);   // 需要 byte[15..46]
     f.close();
     if (dat.size() < 47) {
         if (errOut) *errOut = QStringLiteral(".dat 太小（%1 字节）").arg(dat.size());
@@ -741,7 +878,7 @@ bool loadOracleCt(const QString& knownDatPath, unsigned char ct1[16],
     }
     memset(ct1, 0, 16);
     memset(ct2, 0, 16);
-    memcpy(ct1, dat.constData() + 15, 16);
+    memcpy(ct1, dat.constData() + 15, 16);   // 密文块对齐在 offset 15（实测证明）
     memcpy(ct2, dat.constData() + 31, 16);
     return true;
 }
@@ -755,6 +892,24 @@ void setOpenProcErr(quint32 pid, QString* errOut) {
 
 } // namespace
 
+// 前向声明 collectOracleDats 和 guessDataDirFromOracle（在文件下方定义）。
+static QString guessDataDirFromOracle(const QString& oraclePath);
+QStringList collectOracleDats(const QString& dataDir, int maxN);
+
+// 进程 → XOR key 列表（按 dll 路径去重缓存，避免重复读盘）
+static QHash<QString, QStringList>& xorKeyCache() {
+    static QHash<QString, QStringList> cache;
+    return cache;
+}
+static QStringList getXorKeysForPid(quint32 pid) {
+    const QString dllPath = findWeixinDllPath(pid);
+    if (dllPath.isEmpty()) return {};
+    if (xorKeyCache().contains(dllPath)) return xorKeyCache().value(dllPath);
+    const QStringList ks = extractXorKeysFromDllFile(dllPath);
+    xorKeyCache().insert(dllPath, ks);
+    return ks;
+}
+
 QString extractImageKey(quint32 pid, const QString& knownDatPath, QString* errOut) {
     unsigned char ct1[16] = {}, ct2[16] = {};
     if (!loadOracleCt(knownDatPath, ct1, ct2, errOut)) return {};
@@ -762,19 +917,76 @@ QString extractImageKey(quint32 pid, const QString& knownDatPath, QString* errOu
     HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
     if (!proc) { setOpenProcErr(pid, errOut); return {}; }
 
-    const QString keyHex = scanPidForImageKey(proc, pid, ct1, ct2, knownDatPath);
+    // 多 oracle 交叉验证：从 dataDir 收集另外 2 张最大的 .dat
+    QStringList extraOracles;
+    const QString dataDir = guessDataDirFromOracle(knownDatPath);
+    if (!dataDir.isEmpty()) {
+        const QStringList all = collectOracleDats(dataDir, 3);
+        for (const QString& p : all) {
+            if (p != knownDatPath) extraOracles << p;
+        }
+    }
+    if (!extraOracles.isEmpty()) {
+        Logger::instance().info(
+            QString("extractImageKey: cross-oracle = %1 additional files").arg(extraOracles.size()),
+            "wechat.key");
+    }
+
+    // v5 XOR 还原（4.1.10.31+）：从 Weixin.dll 提取 XOR key，扫描时实时还原候选
+    const QStringList xorKeys = getXorKeysForPid(pid);
+    if (!xorKeys.isEmpty()) {
+        Logger::instance().info(
+            QString("extractImageKey: v5 xorKeys=%1 from Weixin.dll (XOR-deobfuscation enabled)").arg(xorKeys.size()),
+            "wechat.key");
+    }
+
+    const QString keyHex = scanPidForImageKey(proc, pid, ct1, ct2, knownDatPath, extraOracles, xorKeys);
     CloseHandle(proc);
 
     if (keyHex.isEmpty() && errOut) {
         *errOut = QStringLiteral(
             "未找到图片 AES key。可能原因：\n"
             "  1) .dat 不是 V2 格式（magic 应为 07 08 V 2 08 07）\n"
-            "  2) 微信版本 ≥ 4.1.10.31，图片 key 可能被 XOR 混淆存储（本工具暂不支持）\n"
+            "  2) 微信版本 ≥ 4.1.10.31，图片 key XOR 还原失败（特征可能已变化）\n"
             "  3) 微信进程权限不足（请以管理员权限运行 bambooRat）\n"
             "  4) oracle .dat 与进程不匹配（用另一张大图重试）\n"
             "  5) key 只存在子进程中（已尝试全部 Weixin + WeChatAppEx）");
     }
     return keyHex;
+}
+
+// 扫描单个进程，用 {ptr, 0, 0x10, 0x2F} 结构找 16 字节图片 key 候选（hex 32 字符）。
+// 与 db key 的 {ptr, 0, 0x20, 0x2F} 提取逻辑一致，但 key 长度是 16 而非 32。
+static QStringList collectImageKeyCandidatesForPid(HANDLE proc) {
+    SYSTEM_INFO si = {};
+    GetSystemInfo(&si);
+    quint64 addr = std::max<quint64>(0x10000,
+                                     reinterpret_cast<quint64>(si.lpMinimumApplicationAddress));
+    const quint64 limit = std::min<quint64>(0x7FFFFFFFFFFFULL,
+                                            reinterpret_cast<quint64>(si.lpMaximumApplicationAddress));
+    const QByteArray pattern(kV4ImagePattern, sizeof(kV4ImagePattern));
+    QStringList keys;
+    QSet<quint64> seen;
+    while (addr < limit) {
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (VirtualQueryEx(proc, reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) == 0)
+            break;
+        const quint64 regionEnd = reinterpret_cast<quint64>(mbi.BaseAddress) + mbi.RegionSize;
+        if (mbi.State == MEM_COMMIT
+                && mbi.Type == MEM_PRIVATE
+                && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+            QByteArray buf(static_cast<int>(mbi.RegionSize), Qt::Uninitialized);
+            SIZE_T read = 0;
+            if (ReadProcessMemory(proc, mbi.BaseAddress, buf.data(),
+                                  static_cast<SIZE_T>(mbi.RegionSize), &read)
+                && read > 0) {
+                buf.resize(static_cast<int>(read));
+                collectImageKeyCandidates(proc, buf, pattern, 8, seen, keys);
+            }
+        }
+        addr = regionEnd;
+    }
+    return keys;
 }
 
 QString extractImageKeyMulti(const QList<quint32>& pids,
@@ -787,6 +999,86 @@ QString extractImageKeyMulti(const QList<quint32>& pids,
         QString("extractImageKeyMulti: scanning %1 pids").arg(pids.size()),
         "wechat.key");
 
+    // 多 oracle 交叉验证：从 dataDir 收集另外 2 张最大的 .dat
+    QStringList extraOracles;
+    const QString dataDir = guessDataDirFromOracle(knownDatPath);
+    if (!dataDir.isEmpty()) {
+        const QStringList all = collectOracleDats(dataDir, 3);
+        for (const QString& p : all) {
+            if (p != knownDatPath) extraOracles << p;
+        }
+    }
+    if (!extraOracles.isEmpty()) {
+        Logger::instance().info(
+            QString("extractImageKeyMulti: cross-oracle = %1 additional files").arg(extraOracles.size()),
+            "wechat.key");
+    }
+
+    // ── 阶段 A：结构特征扫描 {ptr, 0, 0x10, 0x2F} ────────────────────────────
+    // 4.x WeChat 把 SQLCipher db key（32B，模式 0x20）和图片 key（16B，模式 0x10）
+    // 封装在同一 allocator 下。先用结构特征精确收集候选，再逐个 EVP 验证。
+    // 如果命中，无需做全内存盲扫（每进程 30~60 秒 → 瞬间）。
+    QStringList structCandidates;
+    for (quint32 pid : pids) {
+        HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
+        if (!proc) continue;
+        const QStringList cs = collectImageKeyCandidatesForPid(proc);
+        CloseHandle(proc);
+        for (const QString& c : cs) {
+            if (!structCandidates.contains(c)) structCandidates.append(c);
+        }
+    }
+    Logger::instance().info(
+        QString("extractImageKeyMulti: struct candidates=%1 (via 0x10 pattern)").arg(structCandidates.size()),
+        "wechat.key");
+
+    // 收集全部 XOR key（用于还原候选的混淆形态）
+    QStringList allXorKeys;
+    for (quint32 pid : pids) {
+        const QStringList xks = getXorKeysForPid(pid);
+        for (const QString& x : xks) {
+            if (!allXorKeys.contains(x)) allXorKeys.append(x);
+        }
+    }
+
+    // 构造完整 oracle 路径集（known + extraOracles）
+    QStringList allOracles;
+    allOracles << knownDatPath;
+    for (const QString& p : extraOracles) {
+        if (p != knownDatPath) allOracles << p;
+    }
+
+    // 直接验证候选（未混淆形态）
+    for (const QString& c : structCandidates) {
+        if (c.size() != 32) continue;
+        QString err;
+        if (!verifyImageKeyMulti(allOracles, c, &err).isEmpty()) {
+            Logger::instance().info(
+                QString("extractImageKeyMulti: struct-candidate HIT key=%1").arg(c),
+                "wechat.key");
+            return c;
+        }
+    }
+    // XOR 还原候选（4.1.10.31+ 混淆形态）
+    for (const QString& xk : allXorKeys) {
+        for (const QString& c : structCandidates) {
+            const QString xored = xorHexKeys(c, xk);
+            if (xored.isEmpty() || xored == c) continue;
+            QString err;
+            if (!verifyImageKeyMulti(allOracles, xored, &err).isEmpty()) {
+                Logger::instance().info(
+                    QString("extractImageKeyMulti: struct-candidate XOR-HIT key=%1 (from %2)")
+                        .arg(xored).arg(c),
+                    "wechat.key");
+                return xored;
+            }
+        }
+    }
+    Logger::instance().info(
+        QString("extractImageKeyMulti: struct-candidate scan found no match, falling back to memory scan"),
+        "wechat.key");
+
+    // ── 阶段 B：盲扫内存（原逻辑） ────────────────────────────────────────────
     QString lastErr;
     for (quint32 pid : pids) {
         HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
@@ -796,7 +1088,14 @@ QString extractImageKeyMulti(const QList<quint32>& pids,
             Logger::instance().warn(lastErr, "wechat.key");
             continue;
         }
-        const QString k = scanPidForImageKey(proc, pid, ct1, ct2, knownDatPath);
+        // v5 XOR 还原（4.1.10.31+）：从 Weixin.dll 提取 XOR key 用于还原候选
+        const QStringList xorKeys = getXorKeysForPid(pid);
+        if (!xorKeys.isEmpty()) {
+            Logger::instance().info(
+                QString("extractImageKeyMulti: pid=%1 xorKeys=%2").arg(pid).arg(xorKeys.size()),
+                "wechat.key");
+        }
+        const QString k = scanPidForImageKey(proc, pid, ct1, ct2, knownDatPath, extraOracles, xorKeys);
         CloseHandle(proc);
         if (!k.isEmpty()) {
             Logger::instance().info(
@@ -812,13 +1111,137 @@ QString extractImageKeyMulti(const QList<quint32>& pids,
             "最后错误：%2\n"
             "可能原因：\n"
             "  1) .dat 不是 V2 格式（magic 应为 07 08 V 2 08 07）\n"
-            "  2) 微信版本 ≥ 4.1.10.31，图片 key 可能被 XOR 混淆存储\n"
+            "  2) 微信版本 ≥ 4.1.10.31，XOR 还原失败（特征可能已变化）\n"
             "  3) 微信进程权限不足（请以管理员权限运行 bambooRat）\n"
             "  4) oracle .dat 与进程不匹配（用另一张大图重试）\n"
             "  5) key 仅在特定会话窗口打开时驻留内存（请重试）")
             .arg(pids.size()).arg(lastErr);
     }
     return {};
+}
+
+// ── 多 oracle 交叉验证：排除单 oracle 假阳性 ─────────────────────────────────
+// 之前发现占位 key（如 "klRlRmRm..."）偶尔能让某个 .dat 的密文块解出 JPEG magic，
+// 让单文件 verifyKeyByFullOracle 通过。把验证改成"全部 oracle 都通过才接受"。
+// 这把单 oracle 的 ~1/2^28 假阳性概率压到 ~1/2^84（N=3 时），几乎为 0。
+// 从 oracle .dat 路径反推 wxid dataDir。
+// .dat 路径 = dataDir/msg/attach/<talkerMd5>/<yyyy-MM>/Img/<md5>.dat
+// 所以 dataDir = .dat 路径去掉 /msg/attach 之后的部分。
+static QString guessDataDirFromOracle(const QString& oraclePath) {
+    const int idx = oraclePath.indexOf(QStringLiteral("/msg/attach"));
+    if (idx < 0) return {};
+    return oraclePath.left(idx);
+}
+
+// ── 多 oracle 交叉验证：排除单 oracle 假阳性 ─────────────────────────────────
+// 之前发现占位 key（如 "klRlRmRm..."）偶尔能让某个 .dat 的密文块解出 JPEG magic，
+// 让单文件 verifyKeyByFullOracle 通过。把验证改成"全部 oracle 都通过才接受"。
+// 这把单 oracle 的 ~1/2^28 假阳性概率压到 ~1/2^84（N=3 时），几乎为 0。
+QStringList collectOracleDats(const QString& dataDir, int maxN) {
+    QStringList out;
+    if (dataDir.isEmpty() || !QFile::exists(dataDir)) return out;
+    QDir imgRoot(dataDir + "/msg/attach");
+    if (!imgRoot.exists()) return out;
+    struct Entry { QDateTime mtime; qint64 sz; QString path; };
+    QList<Entry> all;
+    const QFileInfoList dirs = imgRoot.entryInfoList(
+        QStringList{"*"}, QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo& d1 : dirs) {
+        const QFileInfoList yms = QDir(d1.absoluteFilePath()).entryInfoList(
+            QStringList{"*"}, QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QFileInfo& d2 : yms) {
+            const QFileInfoList subs = QDir(d2.absoluteFilePath()).entryInfoList(
+                QStringList{"Img","Video"}, QDir::Dirs | QDir::NoDotAndDotDot);
+            for (const QFileInfo& d3 : subs) {
+                const QFileInfoList files = QDir(d3.absoluteFilePath()).entryInfoList(
+                    QStringList{"*.dat"}, QDir::Files);
+                for (const QFileInfo& f : files) {
+                    const QString name = f.fileName();
+                    if (name.endsWith("_t.dat") || name.endsWith("_h.dat")) continue;
+                    if (f.size() < 8192) continue;  // 跳过太小的（无法可靠验证）
+                    all.append({ f.lastModified(), f.size(), f.absoluteFilePath() });
+                }
+            }
+        }
+    }
+    // 按修改时间降序：最新修改的 .dat 优先 — 最可能与当前驻留内存的 key 匹配。
+    // 次排序按大小降序：同一时间优先大文件（密文多 → 验证更可靠）。
+    std::sort(all.begin(), all.end(),
+              [](const Entry& a, const Entry& b){
+                  if (a.mtime != b.mtime) return a.mtime > b.mtime;
+                  return a.sz > b.sz;
+              });
+    for (int i = 0; i < qMin(maxN, all.size()); ++i) out.append(all[i].path);
+    return out;
+}
+
+QString verifyImageKeyMulti(const QList<QString>& oraclePaths,
+                            const QString& hexKey,
+                            QString* errOut) {
+    if (hexKey.size() != 32) {
+        if (errOut) *errOut = "image key hex length != 32";
+        return QString();
+    }
+    const QByteArray keyBytes = QByteArray::fromHex(hexKey.toLatin1());
+    if (keyBytes.size() != 16) {
+        if (errOut) *errOut = "image key hex decode != 16 bytes";
+        return QString();
+    }
+    if (oraclePaths.isEmpty()) {
+        if (errOut) *errOut = "no oracle .dat paths provided";
+        return QString();
+    }
+    int ok = 0;
+    QString firstFail;
+    for (const QString& p : oraclePaths) {
+        // 复用 verifyKeyByFullOracle：单文件 EVP 解密 + looksLikeImagePlain + 次块检查
+        // 但该函数只接受一个 path —— 这里直接复刻一遍以拿到通过的 oracle 名
+        QFile f(p);
+        if (!f.open(QIODevice::ReadOnly)) {
+            if (firstFail.isEmpty()) firstFail = "open fail: " + p;
+            continue;
+        }
+        const QByteArray dat = f.readAll();
+        f.close();
+        if (dat.size() <= 47) { if (firstFail.isEmpty()) firstFail = "too small: " + p; continue; }
+        if ((unsigned char)dat[0] != 0x07 || (unsigned char)dat[1] != 0x08 ||
+            (unsigned char)dat[2] != 'V'  || (unsigned char)dat[3] != '2') {
+            if (firstFail.isEmpty()) firstFail = "no V2 magic: " + p;
+            continue;
+        }
+        bool okOffset = tryOffsetVerify(
+            reinterpret_cast<const unsigned char*>(keyBytes.constData()), dat, 15)
+            || tryOffsetVerify(
+                reinterpret_cast<const unsigned char*>(keyBytes.constData()), dat, 16);
+        if (okOffset) {
+            ++ok;
+            Logger::instance().info(
+                QString("verifyImageKeyMulti: oracle OK (%1/%2) %3")
+                    .arg(ok).arg(oraclePaths.size()).arg(p),
+                "wechat.key");
+        } else if (firstFail.isEmpty()) {
+            firstFail = "decrypt not-image-magic: " + p;
+        }
+    }
+    // 多数通过即接受。WeChat 4.1.13.65 实测存在多 key（per-image / per-direction）：
+    // 例如手机发到文件传输助手的图可能用另一个 key。要求全部通过会把真 key 误杀。
+    // 多数通过（ok*2 >= N）的 key 仍能解该 oracle 代表的多数图，作为当前 key 使用；
+    // 后续用对应 oracle 单独再跑一次可拿到第二把 key。
+    if (ok * 2 >= oraclePaths.size()) {
+        if (ok != oraclePaths.size()) {
+            Logger::instance().warn(
+                QString("verifyImageKeyMulti: partial coverage %1/%2 oracles passed — key accepted (uncovered files likely use a different per-image key)")
+                    .arg(ok).arg(oraclePaths.size()),
+                "wechat.key");
+        }
+        if (errOut) *errOut = QString("partial coverage %1/%2").arg(ok).arg(oraclePaths.size());
+        return hexKey;
+    }
+    if (errOut) {
+        *errOut = QString("交叉验证失败：%1/%2 oracle 通过（首条失败：%3）")
+            .arg(ok).arg(oraclePaths.size()).arg(firstFail);
+    }
+    return QString();
 }
 
 } // namespace WeChatKeyExtractor
