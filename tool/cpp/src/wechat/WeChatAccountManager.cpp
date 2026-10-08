@@ -13,6 +13,92 @@
 #include <QRegularExpression>
 #include <QUuid>
 
+namespace {
+
+// 简易 protobuf varint 解码（与 WeChatDb.cpp parseRoomData 风格一致）。
+// 微信 4.x 的 account.info 是标准 protobuf，昵称/nickName 出现在
+// length-delimited string 字段里；本函数扫描全部 string 字段，按启发式
+// 挑出最像昵称的那一条（UTF-8 可解码、长度适中、不含 wxid_/邮箱特征）。
+QString readProtobufNickname(const QByteArray& buf) {
+    QString best;
+    auto readVarint = [&](int& p, quint64& out) -> bool {
+        quint64 v = 0;
+        int shift = 0;
+        while (p < buf.size()) {
+            const quint8 b = quint8(buf[p++]);
+            v |= quint64(b & 0x7F) << shift;
+            if (!(b & 0x80)) { out = v; return true; }
+            shift += 7;
+            if (shift > 63) return false;
+        }
+        return false;
+    };
+    auto looksLikeNickname = [](const QString& s) -> bool {
+        if (s.isEmpty()) return false;
+        if (s.size() > 32) return false;            // 昵称通常不会超长
+        if (s.startsWith("wxid_", Qt::CaseInsensitive)) return false;
+        if (s.contains('@')) return false;          // 排除邮箱/chatroom
+        if (s.contains(QRegularExpression("[<>]"))) return false;
+        // 至少有一个非 ASCII 字符（中/日/韩/emoji）或长度≥2 的可打印 ASCII
+        bool hasNonAscii = false;
+        for (QChar c : s) if (c.unicode() > 127) { hasNonAscii = true; break; }
+        return hasNonAscii || s.size() >= 2;
+    };
+    int pos = 0;
+    while (pos < buf.size()) {
+        quint64 tag = 0;
+        if (!readVarint(pos, tag)) break;
+        const quint64 wt = tag & 7;
+        if (wt == 2) {                              // length-delimited
+            quint64 len = 0;
+            if (!readVarint(pos, len)) break;
+            if (int(len) < 0 || pos + int(len) > buf.size()) break;
+            const QByteArray val = buf.mid(pos, int(len));
+            pos += int(len);
+            const QString s = QString::fromUtf8(val);
+            if (looksLikeNickname(s) &&
+                (best.isEmpty() || s.size() > best.size()))
+                best = s;
+        } else if (wt == 0) {
+            quint64 v = 0;
+            if (!readVarint(pos, v)) break;
+        } else if (wt == 5) {
+            if (pos + 4 > buf.size()) break;
+            pos += 4;
+        } else if (wt == 1) {
+            if (pos + 8 > buf.size()) break;
+            pos += 8;
+        } else {
+            break;
+        }
+    }
+    return best;
+}
+
+// 微信 4.x 账号信息文件位置因版本略有差异，按优先级尝试。
+//   account.info / Misc/account.info / acc_info.dat
+QString readWeChat4Nickname(const QString& wxidDir) {
+    static const QStringList candidates{
+        "/account.info",
+        "/Misc/account.info",
+        "/acc_info.dat",
+        "/sync/acc_info.dat",
+    };
+    for (const QString& rel : candidates) {
+        const QString path = wxidDir + rel;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) continue;
+        const QByteArray buf = f.readAll();
+        f.close();
+        if (buf.size() < 8) continue;
+        const QString nick = readProtobufNickname(buf);
+        if (!nick.isEmpty()) return nick;
+    }
+    return {};
+}
+
+} // namespace
+
 WeChatAccountManager& WeChatAccountManager::instance() {
     static WeChatAccountManager inst;
     return inst;
@@ -270,6 +356,7 @@ WeChatAccountManager::discoverLocalAccounts() const {
                         d.wxid = wxid;
                         d.dataDir = fi.absoluteFilePath();
                         d.version = "4.x";
+                        d.nickname = readWeChat4Nickname(fi.absoluteFilePath());
                         result.append(d);
                     }
                 }

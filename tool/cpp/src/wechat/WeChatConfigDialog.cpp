@@ -18,19 +18,45 @@
 #include <QComboBox>
 #include <QLabel>
 #include <QPushButton>
-#include <QListWidget>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QStackedWidget>
-#include <QListWidgetItem>
+#include <QAbstractItemView>
 #include <QFile>
 #include <QPointer>
 #include <QThread>
 #include <QToolButton>
+#include <QPixmap>
+#include <QPainter>
+#include <QBuffer>
+#include <QByteArray>
 #include <thread>
 #include <atomic>
 
 using Account = WeChatAccountManager::Account;
+
+// 生成一个 12x6 的 ▼ 三角形 PNG，返回 base64 字符串。
+// 嵌入到 QSS 的 data:image/png;base64,XXX 是 Qt 6 最可靠的子控件 image 方案
+// （data:image/svg+xml 经常因字符编码不显示，纯 CSS border 三角在某些主题下也不渲染）。
+static QString makeDownArrowPngBase64(const QColor& color) {
+    QPixmap pix(12, 6);
+    pix.fill(Qt::transparent);
+    QPainter p(&pix);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(color);
+    pen.setWidthF(1.6);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
+    p.drawLine(QPointF(1.5, 1.5), QPointF(6, 5));
+    p.drawLine(QPointF(6, 5),   QPointF(10.5, 1.5));
+    p.end();
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    buf.open(QIODevice::WriteOnly);
+    pix.save(&buf, "PNG");
+    return QString::fromLatin1(bytes.toBase64());
+}
 
 // 生成一个小眼睛切换按钮：点击切换 QLineEdit 的 Password/Normal 显示
 static QToolButton* makeEyeButton(QLineEdit* edit) {
@@ -115,26 +141,39 @@ void WeChatConfigDialog::buildUi() {
     scanRow->addWidget(scanHint, 1);
     root->addLayout(scanRow);
 
-    m_scanList = new QListWidget;
-    m_scanList->setMaximumHeight(110);
-    m_scanList->setVisible(false);
-    m_scanList->setStyleSheet(QString(
-        "QListWidget{background:%1;border:1px solid %2;border-radius:4px;"
-        "color:%3;outline:0;}"
-        "QListWidget::item{border-radius:4px;}"
-        "QListWidget::item:hover{background:%4;}"
-        "QListWidget::item:selected{background:%4;color:%5;}")
-        .arg(Theme::kSurfaceAlt, Theme::kBorder, Theme::kText,
-             Theme::kBorder, Theme::kTextBright));
-    root->addWidget(m_scanList);
-
     // ── 表单 ──
     auto* form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignRight);
 
-    m_nameEdit = new QLineEdit;
-    m_nameEdit->setPlaceholderText("账号显示名称（如：我的微信）");
-    form->addRow("名称:", m_nameEdit);
+    m_nameCombo = new QComboBox;
+    m_nameCombo->setObjectName("nameCombo");   // 用于覆盖全局样式
+    m_nameCombo->setEditable(true);
+    m_nameCombo->setInsertPolicy(QComboBox::NoInsert);
+    m_nameCombo->lineEdit()->setPlaceholderText(
+        "账号显示名称（点击「扫描本机微信」从下拉选择，或手动输入）");
+    m_nameCombo->setMinimumWidth(280);
+    // 下拉项宽于组合框（防止 wxid/数据目录被截断）
+    m_nameCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_nameCombo->view()->setTextElideMode(Qt::ElideNone);
+    // 用 #nameCombo 选择器（ID 优先级高于全局 QComboBox 类型选择器），
+    // 强制显示右侧下拉箭头（默认全局样式把 QComboBox::drop-down 的 border 设为 none，
+    // 导致箭头不可见、下拉框视觉上像普通 QLineEdit）。
+    // 程序生成 ▼ 三角形 PNG 嵌入 data URL——Qt 6 QSS 对 base64 PNG image 支持最稳
+    const QString arrowPng = makeDownArrowPngBase64(QColor(Theme::kText));
+    m_nameCombo->setStyleSheet(QString(
+        "#nameCombo{background:%1;border:1px solid %2;border-radius:4px;"
+        "padding:4px 8px;color:%3;min-height:22px;}"
+        "#nameCombo:hover{border-color:%4;}"
+        "#nameCombo::drop-down{subcontrol-origin:padding;"
+        "subcontrol-position:top right;width:26px;border-left:1px solid %2;}"
+        "#nameCombo::down-arrow{width:12px;height:6px;"
+        "image:url(data:image/png;base64,%7);}"
+        "#nameCombo QAbstractItemView{background:%1;border:1px solid %2;"
+        "border-radius:4px;color:%3;outline:0;selection-background-color:%4;"
+        "selection-color:%6;padding:4px;}")
+        .arg(Theme::kSurfaceAlt, Theme::kBorder, Theme::kText,
+             Theme::kAccent, Theme::kTextBright, Theme::kTextBright, arrowPng));
+    form->addRow("名称:", m_nameCombo);
 
     m_wxidEdit = new QLineEdit;
     m_wxidEdit->setPlaceholderText("wxid_xxx（扫描选择后自动填充）");
@@ -227,7 +266,7 @@ void WeChatConfigDialog::buildUi() {
     auto* save = new QPushButton("保存");
     save->setObjectName("primaryBtn");
     connect(save, &QPushButton::clicked, this, [this]() {
-        const QString name = m_nameEdit->text().trimmed();
+        const QString name = m_nameCombo->currentText().trimmed();
         const QString wxid = m_wxidEdit->text().trimmed();
         const QString dir  = m_dirEdit->text().trimmed();
         const QString key  = m_keyEdit->text().trimmed();
@@ -294,8 +333,9 @@ void WeChatConfigDialog::buildUi() {
     root->addLayout(btns);
 
     connect(scanBtn, &QPushButton::clicked, this, &WeChatConfigDialog::scanLocal);
-    connect(m_scanList, &QListWidget::currentRowChanged,
-            this, &WeChatConfigDialog::onDiscoveredSelected);
+    connect(m_nameCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &WeChatConfigDialog::onNameComboChanged);
 }
 
 void WeChatConfigDialog::scanLocal() {
@@ -307,19 +347,30 @@ void WeChatConfigDialog::scanLocal() {
     }
 
     const auto found = WeChatAccountManager::instance().discoverLocalAccounts();
-    m_scanList->clear();
-    m_scanList->setVisible(!found.isEmpty());
     m_scanKeys.clear();
+    m_nameByWxid.clear();
+    // 重填下拉框（保留 placeholder 占位；先清空旧项）
+    m_nameCombo->clear();
     m_hintLabel->setStyleSheet(Theme::mutedText());
     m_hintLabel->setText(found.isEmpty() ? "未在本机发现微信数据目录" : QString());
     for (const auto& d : found) {
-        auto* item = new QListWidgetItem(m_scanList);
-        item->setText(QString("%1  （微信 %2）\n%3")
-                          .arg(d.wxid, d.version, d.dataDir));
-        item->setData(Qt::UserRole, d.wxid);
-        item->setData(Qt::UserRole + 1, d.dataDir);
-        item->setData(Qt::UserRole + 2, d.version);
-        m_scanList->addItem(item);
+        // 下拉项文本：昵称 + wxid（昵称为空时退化为 wxid）
+        const QString display = d.nickname.isEmpty()
+            ? QString("%1").arg(d.wxid)
+            : QString("%1  (%2)").arg(d.nickname, d.wxid);
+        m_nameCombo->addItem(display);
+        const int idx = m_nameCombo->count() - 1;
+        m_nameCombo->setItemData(idx, d.wxid, Qt::UserRole);
+        m_nameCombo->setItemData(idx, d.dataDir, Qt::UserRole + 1);
+        m_nameCombo->setItemData(idx, d.version, Qt::UserRole + 2);
+        m_nameCombo->setItemData(idx, d.nickname, Qt::UserRole + 3);
+        m_nameByWxid[d.wxid] = display;
+        m_scanKeys.remove(d.wxid);   // 重置本次的密钥缓存
+    }
+    // 只有一个发现项时直接选中（昵称>占位）
+    if (m_nameCombo->count() == 1) {
+        m_nameCombo->setCurrentIndex(0);
+        onNameComboChanged(0);
     }
 
     // 微信在运行时：后台线程收集候选密钥并逐账号验证（避免阻塞 UI）
@@ -415,18 +466,20 @@ void WeChatConfigDialog::onScanExtractDone() {
     cleanupScanThread();
 }
 
-void WeChatConfigDialog::onDiscoveredSelected(int row) {
-    if (row < 0) return;
-    auto* item = m_scanList->item(row);
-    const QString wxid = item->data(Qt::UserRole).toString();
-    const QString dir  = item->data(Qt::UserRole + 1).toString();
-    const QString ver  = item->data(Qt::UserRole + 2).toString();
+void WeChatConfigDialog::onNameComboChanged(int index) {
+    if (index < 0 || index >= m_nameCombo->count()) return;
+    const QString wxid = m_nameCombo->itemData(index, Qt::UserRole).toString();
+    const QString dir  = m_nameCombo->itemData(index, Qt::UserRole + 1).toString();
+    const QString ver  = m_nameCombo->itemData(index, Qt::UserRole + 2).toString();
+    const QString nick = m_nameCombo->itemData(index, Qt::UserRole + 3).toString();
 
     m_wxidEdit->setText(wxid);
     m_dirEdit->setText(dir);
-    if (m_nameEdit->text().trimmed().isEmpty()) m_nameEdit->setText(wxid);
-    const int idx = m_versionCombo->findData(ver);
-    if (idx >= 0) m_versionCombo->setCurrentIndex(idx);
+    // 仅在名称框为空时才覆盖，避免破坏用户自定义名称
+    if (m_nameCombo->currentText().trimmed().isEmpty())
+        m_nameCombo->setCurrentText(nick.isEmpty() ? wxid : nick);
+    const int vidx = m_versionCombo->findData(ver);
+    if (vidx >= 0) m_versionCombo->setCurrentIndex(vidx);
 
     // 自动填充提取到的密钥
     const QString key = m_scanKeys.value(wxid);
@@ -645,7 +698,7 @@ void WeChatConfigDialog::verifyImageKey() {
 void WeChatConfigDialog::loadAccount() {
     auto* acc = WeChatAccountManager::instance().getById(m_editId);
     if (!acc) return;
-    m_nameEdit->setText(acc->name);
+    m_nameCombo->setCurrentText(acc->name);
     m_wxidEdit->setText(acc->wxid);
     m_dirEdit->setText(acc->dataDir);
     const int idx = m_versionCombo->findData(acc->version);

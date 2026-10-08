@@ -35,7 +35,7 @@ public:
 
 private slots:
     void scanLocal();
-    void onDiscoveredSelected(int row);
+    void onNameComboChanged(int index);
     void browseDataDir();
     void testKey();
     void extractKey();
@@ -55,20 +55,20 @@ private:
     static QString pickOracleDat(const QString& dataDir);
 
     QString m_editId;
-    QLineEdit* m_nameEdit = nullptr;
+    QComboBox* m_nameCombo = nullptr;     // 名称（昵称 / 自定义）下拉选择
     QLineEdit* m_wxidEdit = nullptr;
     QLineEdit* m_dirEdit = nullptr;
     QLineEdit* m_keyEdit = nullptr;
     QLineEdit* m_imageKeyEdit = nullptr;
     QComboBox* m_versionCombo = nullptr;
-    QListWidget* m_scanList = nullptr;
+    QMap<QString, QString> m_scanKeys;  // 扫描提取的密钥：wxid → keyHex
+    QMap<QString, QString> m_nameByWxid;  // 扫描结果：wxid → 显示名（昵称/wxid）
     QLabel* m_hintLabel = nullptr;
     QLabel* m_imageHintLabel = nullptr;  // 图片密钥提示（放在图片密钥输入框下方）
     QPushButton* m_testBtn = nullptr;
     QPushButton* m_extractBtn = nullptr;
     QPushButton* m_extractImageKeyBtn = nullptr;
     QPushButton* m_verifyImageKeyBtn = nullptr;
-    QMap<QString, QString> m_scanKeys;  // 扫描提取的密钥：wxid → keyHex
 
     // 后台密钥提取（避免 50+ 候选 × 多账号 verifyKey 在主线程阻塞 UI）
     std::atomic<bool> m_scanCancel{false};

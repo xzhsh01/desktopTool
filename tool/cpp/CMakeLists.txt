@@ -100,6 +100,12 @@ target_compile_definitions(zstd PRIVATE
     ZSTD_MULTITHREAD=0
     ZSTD_NO_UNUSED_FUNCTIONS=0
 )
+# 纯 C 库，不需要 Qt 元对象处理；显式关闭 AUTOMOC 避免 moc_predefs 生成失败
+set_target_properties(zstd PROPERTIES
+    AUTOMOC OFF
+    AUTOUIC OFF
+    AUTORCC OFF
+)
 
 # ---------------------------------------------------------------------------
 # openssl_shim：OpenSSL 1.1 -> 3.x ABI 兼容垫片（libssh 静态库依赖）
@@ -327,6 +333,7 @@ target_link_libraries(verifykey PRIVATE
     Qt6::Sql
     OpenSSL::Crypto
     sqlite3
+    zstd
 )
 endif()
 
@@ -350,60 +357,6 @@ target_link_libraries(keytest PRIVATE
     zstd
     crypt32
     psapi
-)
-endif()
-
-# ---------------------------------------------------------------------------
-# zstd_test: 验证 4.x emoji zstd 解压 + md5 提取 (临时)
-# ---------------------------------------------------------------------------
-if(TARGET Qt6::Core)
-add_executable(zstd_test
-    src/zstd_test.cpp
-    src/wechat/WeChatDb.cpp
-    src/core/Logger.cpp
-    src/core/Settings.cpp
-)
-target_include_directories(zstd_test PRIVATE src)
-target_link_libraries(zstd_test PRIVATE
-    Qt6::Core
-    Qt6::Sql
-    OpenSSL::Crypto
-    sqlite3
-    zstd
-)
-
-# dump_attach: dump type=43/6/49 消息的 packed_info_data + zstd XML (临时)
-add_executable(dump_attach
-    src/dump_attach.cpp
-    src/wechat/WeChatDb.cpp
-    src/core/Logger.cpp
-    src/core/Settings.cpp
-)
-target_include_directories(dump_attach PRIVATE src)
-target_link_libraries(dump_attach PRIVATE
-    Qt6::Core
-    Qt6::Sql
-    OpenSSL::Crypto
-    sqlite3
-    zstd
-)
-endif()
-
-# ---------------------------------------------------------------------------
-# verifykey_real: 用给定 keyHex 尝试解密 .dat，验证 key 是否有效 (临时)
-# ---------------------------------------------------------------------------
-if(TARGET Qt6::Core)
-add_executable(verifykey_real
-    src/verifykey_real.cpp
-    src/wechat/WeChatImageDecoder.cpp
-    src/core/Logger.cpp
-    src/core/Settings.cpp
-)
-target_include_directories(verifykey_real PRIVATE src)
-target_link_libraries(verifykey_real PRIVATE
-    Qt6::Core
-    Qt6::Gui
-    OpenSSL::Crypto
 )
 endif()
 

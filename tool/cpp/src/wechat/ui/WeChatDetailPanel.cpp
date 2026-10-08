@@ -621,9 +621,21 @@ QWidget* WeChatDetailPanel::makeBubble(const QVariantMap& m) {
         cl->addLayout(topRow);
 
         // 主体：文件名 / 标题（可点击）
-        const QString titleText = attachTitle.isEmpty()
-                                      ? attachKindLabel(type, subType)
-                                      : attachTitle;
+        // 退化顺序：attachTitle → attachFileName → "类型(扩展名) (md5 前 8 位)" → 纯类型标签
+        const QString attachMd5Title = m["attachMd5"].toString();
+        QString titleText;
+        if (!attachTitle.isEmpty()) {
+            titleText = attachTitle;
+        } else if (type == 49 && subType == 4) {
+            // 文件：拼出文件名+扩展名（无 attachTitle 时仍能看到是什么文件）
+            const QString ext = attachExt.isEmpty() ? QStringLiteral("dat") : attachExt;
+            const QString md5hint = attachMd5Title.isEmpty()
+                ? QString()
+                : QStringLiteral(" (%1)").arg(attachMd5Title.left(8));
+            titleText = QStringLiteral("未命名文件%1.%2").arg(md5hint, ext);
+        } else {
+            titleText = attachKindLabel(type, subType);
+        }
         auto* titleLbl = new QLabel(titleText);
         titleLbl->setWordWrap(true);
         titleLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -677,11 +689,38 @@ QWidget* WeChatDetailPanel::makeBubble(const QVariantMap& m) {
             cl->addWidget(appid);
         }
 
-        // 视频/文件卡片：双击打开详情对话框（CDN URL / AES key / md5）
-        if (isVideoOrFile) {
-            card->setProperty("attachMsg", m);
-            card->setCursor(Qt::PointingHandCursor);
-            card->installEventFilter(this);
+        // 所有附件卡片：双击打开详情对话框（CDN URL / AES key / md5 等元数据）
+        card->setProperty("attachMsg", m);
+        card->setCursor(Qt::PointingHandCursor);
+        card->installEventFilter(this);
+
+        // 图片/表情未能解码时，给出明显的提示
+        if (isImage) {
+            QString hint;
+            if (m_imageKey.isEmpty()) {
+                hint = QStringLiteral("⚠ 缺少图片解密 key — 在微信中双击打开该图片后，"
+                                      "立即点工具栏的「提取图片 key」即可看到原图");
+            } else if (m_dataDir.isEmpty()) {
+                hint = QStringLiteral("⚠ 缺少 dataDir — 请先在配置中指定微信数据目录");
+            } else if (attachMd5.isEmpty()) {
+                hint = QStringLiteral("⚠ 缺少 attachMd5 — 同步后即可看到原图");
+            } else if (!msgDt.isValid()) {
+                hint = QStringLiteral("⚠ 消息时间无效 — 无法定位 .dat 路径");
+            } else {
+                const QString datProbe = resolveDatPath(m_currentTalker, msgDt, attachMd5, "Img");
+                if (!QFileInfo::exists(datProbe)) {
+                    hint = QStringLiteral("⚠ 本机未缓存 .dat（需到微信客户端打开图片下载）");
+                } else {
+                    hint = QStringLiteral("⚠ 图片解码失败 — key 可能已变更，请在微信中重新打开后再次提取");
+                }
+            }
+            auto* hintLbl = new QLabel(hint);
+            hintLbl->setWordWrap(true);
+            hintLbl->setMaximumWidth(360);
+            hintLbl->setStyleSheet(QString("color:%1;font-size:10px;background:transparent;"
+                                           "margin-top:4px;")
+                                    .arg(Theme::kFaint));
+            cl->addWidget(hintLbl);
         }
 
         colWrap->addWidget(card, 0, self ? Qt::AlignRight : Qt::AlignLeft);
