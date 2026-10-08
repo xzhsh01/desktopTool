@@ -55,6 +55,11 @@ public:
         //  - 3.x: 从 StrContent XML 的 <img md5="..."> 或 <img midimgmd5="..."> 读
         //  - type=3 / 47 时通常对应 msg/attach/<sessionMd5>/<YYYY-MM>/Img/<md5>.dat
         QString attachMd5;
+        // 视频/文件附件的 per-message AES key（32 字符 hex，来自 <videomsg aeskey> / <appattach aeskey>）
+        // 4.x 的视频/文件本体走 CDN 加密下载，per-message aeskey 不等于全局 imageKey。
+        QString attachAesKey;
+        // 视频时长（秒，<videomsg playlength>）或音频秒数（<voicemsg voicelength>）
+        qint64 attachLength = 0;
     };
 
     struct Contact {

@@ -259,6 +259,7 @@ set(COMMON_SOURCES
     src/wechat/ui/WeChatSidebar.cpp
     src/wechat/ui/WeChatDetailPanel.cpp
     src/wechat/ui/WeChatListPanel.cpp
+    src/wechat/ui/AttachDetailDialog.cpp
 )
 
 # ---------------------------------------------------------------------------
@@ -364,6 +365,22 @@ add_executable(zstd_test
 )
 target_include_directories(zstd_test PRIVATE src)
 target_link_libraries(zstd_test PRIVATE
+    Qt6::Core
+    Qt6::Sql
+    OpenSSL::Crypto
+    sqlite3
+    zstd
+)
+
+# dump_attach: dump type=43/6/49 消息的 packed_info_data + zstd XML (临时)
+add_executable(dump_attach
+    src/dump_attach.cpp
+    src/wechat/WeChatDb.cpp
+    src/core/Logger.cpp
+    src/core/Settings.cpp
+)
+target_include_directories(dump_attach PRIVATE src)
+target_link_libraries(dump_attach PRIVATE
     Qt6::Core
     Qt6::Sql
     OpenSSL::Crypto

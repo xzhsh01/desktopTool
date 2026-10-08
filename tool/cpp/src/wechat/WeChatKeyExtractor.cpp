@@ -12,6 +12,8 @@
 #include <tlhelp32.h>
 
 #include <algorithm>
+#include <memory>
+#include <vector>
 
 namespace {
 
@@ -310,14 +312,35 @@ QStringList extractXorKeysFromDllFile(const QString& dllPath) {
     return keys;
 }
 
-// 两个 32 字节 hex 值逐字节 XOR，返回 hex；长度不符返回空串
+// 两个等长 hex 值逐字节 XOR，返回 hex；长度不符返回空串。
+// 支持 16B（图片 key）与 32B（db key）任意等长组合。
 QString xorHexKeys(const QString& aHex, const QString& bHex) {
     const QByteArray a = QByteArray::fromHex(aHex.toLatin1());
     const QByteArray b = QByteArray::fromHex(bHex.toLatin1());
-    if (a.size() != 32 || b.size() != 32) return QString();
-    QByteArray r(32, Qt::Uninitialized);
-    for (int i = 0; i < 32; ++i) r[i] = a[i] ^ b[i];
+    if (a.isEmpty() || a.size() != b.size()) return QString();
+    QByteArray r(a.size(), Qt::Uninitialized);
+    for (int i = 0; i < a.size(); ++i) r[i] = a[i] ^ b[i];
     return QString::fromLatin1(r.toHex());
+}
+
+// 把 v5 XOR key（32B，为 db key 混淆设计）展开为 16B mask 列表（前/后半段），
+// 供 16B 图片 key 的 XOR 还原使用；本身即 16B 的 mask 原样保留。
+// 背景 bug：图片 key 路径直接拿 32B xorKey 做 XOR，xorHexKeys 要求等长全部返回空，
+// verifyCandidateKey 又要求 mask==16B 全部跳过 —— XOR 还原对图片 key 从未生效。
+static QStringList expandXorMasks16(const QStringList& xorKeys) {
+    QStringList out;
+    for (const QString& xk : xorKeys) {
+        const QByteArray xb = QByteArray::fromHex(xk.toLatin1());
+        if (xb.size() == 16) {
+            if (!out.contains(xk)) out.append(xk);
+        } else if (xb.size() == 32) {
+            const QString lo = QString::fromLatin1(xb.left(16).toHex());
+            const QString hi = QString::fromLatin1(xb.mid(16).toHex());
+            if (!out.contains(lo)) out.append(lo);
+            if (!out.contains(hi)) out.append(hi);
+        }
+    }
+    return out;
 }
 
 } // namespace
@@ -357,24 +380,28 @@ QList<ProcessInfo> findRunningWeChat() {
 }
 
 QList<quint32> findAllWeChatRelatedPids() {
-    QList<quint32> result;
+    // 主进程（Weixin.exe/WeChat.exe）优先，WeChatAppEx 子进程靠后。
+    // 图片解密在主进程完成，key 几乎只驻留主进程；主进程先扫可尽早命中返回，
+    // 避免逐进程挂起扫描拖长整体冻结时间。
+    QList<quint32> main_, sub;
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return result;
+    if (snap == INVALID_HANDLE_VALUE) return {};
     PROCESSENTRY32W pe = {};
     pe.dwSize = sizeof(pe);
     if (Process32FirstW(snap, &pe)) {
         do {
             const QString name = QString::fromWCharArray(pe.szExeFile).toLower();
             if (name == QStringLiteral("weixin.exe") ||
-                name == QStringLiteral("wechatappex.exe") ||
                 name == QStringLiteral("wechat.exe")) {
-                if (!result.contains(pe.th32ProcessID)) {
-                    result.append(pe.th32ProcessID);
-                }
+                if (!main_.contains(pe.th32ProcessID)) main_.append(pe.th32ProcessID);
+            } else if (name == QStringLiteral("wechatappex.exe")) {
+                if (!sub.contains(pe.th32ProcessID)) sub.append(pe.th32ProcessID);
             }
         } while (Process32NextW(snap, &pe));
     }
     CloseHandle(snap);
+    QList<quint32> result = main_;
+    for (quint32 p : sub) result.append(p);
     return result;
 }
 
@@ -613,15 +640,20 @@ static bool verifyKeyByFullOracle(const unsigned char key[16],
 // 判断 16 字节明文是否像图片 magic（严格版：要求 4+ 字节特征 + 合理字段）
 static bool looksLikeImagePlain(const unsigned char p[16]) {
     // JPEG: FF D8 FF + E0(JFIF) / E1(EXIF) — 所有真实微信图都用这两种主 marker。
-    // 之前接受 DB(DQT)/C4(DHT)/C9(SOF9) 等次要 marker 导致假阳性（4.1.13.65
-    // 某些 .dat 的 ct1 结构让多个随机 key 都碰巧解出 FF D8 FF + 次要 marker，
-    // 但解密全文是乱码）。严格化到 E0/E1 可消除此类假阳性。
+    // 必须进一步校验 JFIF/EXIF 魔数：仅查 "FF D8 FF E1 + 段长合法" 会在盲扫 2 亿次中
+    // 以 ~4.6% 概率撞中（实测：栈上代码字节 0405094c... 解出 FF D8 FF E1 c0 2f，
+    // 段长 49199 恰好在 16~65535 内 → 假阳性）。且微信重编码 JPEG 首块密文相同，
+    // 多 oracle 交叉验证无法排除此类假 key。JFIF/EXIF 魔数把概率压到 ~1/2^72。
     if (p[0] == 0xFF && p[1] == 0xD8 && p[2] == 0xFF) {
-        if (p[3] == 0xE0 || p[3] == 0xE1) {
-            // 进一步：byte 4-5 是段长度（大端 uint16），合法范围 16~65535
-            // byte 6.. 应该是 "JFIF\0" 或 "Exif\0\0" — 但前 16 字节可能不够，只验长度合理
-            const unsigned int segLen = (p[4] << 8) | p[5];
-            if (segLen >= 16 && segLen <= 65535) return true;
+        const unsigned int segLen = (p[4] << 8) | p[5];
+        if (segLen < 2) return false;
+        if (p[3] == 0xE0) {
+            // JFIF: byte[6..10] = "JFIF\0"
+            return p[6] == 'J' && p[7] == 'F' && p[8] == 'I' && p[9] == 'F' && p[10] == 0x00;
+        }
+        if (p[3] == 0xE1) {
+            // EXIF: byte[6..10] = "Exif\0"
+            return p[6] == 'E' && p[7] == 'x' && p[8] == 'i' && p[9] == 'f' && p[10] == 0x00;
         }
         return false;
     }
@@ -685,16 +717,19 @@ static bool verifyCandidateKey(const unsigned char key[16],
         if (recoveredOut) memcpy(recoveredOut, key, 16);
         return true;
     }
-    // 尝试 XOR 还原
+    // 尝试 XOR 还原。mask 可能是 16B（直接用）或 32B（db key 的混淆 mask，
+    // 对 16B 图片 key 尝试其前/后两个 16B 半段）。
+    int flatIdx = 0;
     for (int i = 0; i < xorKeys.size(); ++i) {
         const QByteArray xb = QByteArray::fromHex(xorKeys[i].toLatin1());
-        if (xb.size() != 16) continue;
-        unsigned char k2[16];
-        for (int j = 0; j < 16; ++j) k2[j] = key[j] ^ static_cast<unsigned char>(xb[j]);
-        if (check(k2)) {
-            if (xorIdx) *xorIdx = i;
-            if (recoveredOut) memcpy(recoveredOut, k2, 16);
-            return true;
+        for (int off = 0; off + 16 <= xb.size(); off += 16, ++flatIdx) {
+            unsigned char k2[16];
+            for (int j = 0; j < 16; ++j) k2[j] = key[j] ^ static_cast<unsigned char>(xb[off + j]);
+            if (check(k2)) {
+                if (xorIdx) *xorIdx = flatIdx;
+                if (recoveredOut) memcpy(recoveredOut, k2, 16);
+                return true;
+            }
         }
     }
     return false;
@@ -762,13 +797,13 @@ QString scanPidForImageKey(HANDLE proc, quint32 pid,
                         QString verifiedHex = recoveredHex;
                         if (!verifyKeyByFullOracle(recovered, oraclePath)) {
                             // 三次确认（v5 XOR 还原，已在 verifyCandidateKey 中尝试过）：
-                            // 兜底 — 再尝试所有 xorKeys 全组合
+                            // 兜底 — 再尝试所有 16B mask 全组合（32B xorKey 已展开为半段）
                             QString altHex;
-                            for (const QString& xk : xorKeys) {
-                                const QString xored = xorHexKeys(hitHex, xk);
+                            for (const QString& mk : expandXorMasks16(xorKeys)) {
+                                const QString xored = xorHexKeys(hitHex, mk);
                                 if (xored.isEmpty() || xored == verifiedHex) continue;
                                 QByteArray xb = QByteArray::fromHex(xored.toLatin1());
-                                if (verifyKeyByFullOracle(
+                                if (xb.size() == 16 && verifyKeyByFullOracle(
                                         reinterpret_cast<const unsigned char*>(xb.constData()), oraclePath)) {
                                     altHex = xored;
                                     break;
@@ -889,6 +924,32 @@ void setOpenProcErr(quint32 pid, QString* errOut) {
     *errOut = QStringLiteral("无法打开进程（PID %1，err=%2）")
         .arg(pid).arg(GetLastError());
 }
+
+// ── 进程挂起/恢复（冻结内存状态）──────────────────────────────────────────
+// 4.1.10.31+ 图片 key 生命周期极短（仅图片解密瞬间驻留，用完即清）。
+// 单进程盲扫约 1 分钟，期间 key 极易消失 —— 扫描前挂起进程冻结内存状态。
+// 逐进程挂起：任一时刻只冻结一个进程，扫完立即恢复（RAII）。
+// 微信 UI 在被扫进程冻结期间短暂卡顿，属正常现象。
+typedef NTSTATUS(NTAPI* NtProcessStateFn)(HANDLE);
+
+class ProcSuspendGuard {
+public:
+    explicit ProcSuspendGuard(HANDLE proc) : m_proc(proc) {
+        static const auto fn = reinterpret_cast<NtProcessStateFn>(reinterpret_cast<void*>(
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSuspendProcess")));
+        if (fn && m_proc) m_suspended = (fn(m_proc) >= 0);
+    }
+    ~ProcSuspendGuard() {
+        if (!m_suspended) return;
+        static const auto fn = reinterpret_cast<NtProcessStateFn>(reinterpret_cast<void*>(
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtResumeProcess")));
+        if (fn) fn(m_proc);
+    }
+    bool suspended() const { return m_suspended; }
+private:
+    HANDLE m_proc;
+    bool m_suspended = false;
+};
 
 } // namespace
 
@@ -1018,15 +1079,33 @@ QString extractImageKeyMulti(const QList<quint32>& pids,
     // 4.x WeChat 把 SQLCipher db key（32B，模式 0x20）和图片 key（16B，模式 0x10）
     // 封装在同一 allocator 下。先用结构特征精确收集候选，再逐个 EVP 验证。
     // 如果命中，无需做全内存盲扫（每进程 30~60 秒 → 瞬间）。
+    // 挂起全部进程后再收集：key 生命周期可能只有几秒（图片解密瞬间驻留、用完即清），
+    // 冻结全部进程拿到同一时间快照，收集期间 key 不会被清除。阶段 A 仅需几秒，全冻结可接受。
     QStringList structCandidates;
-    for (quint32 pid : pids) {
-        HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
-        if (!proc) continue;
-        const QStringList cs = collectImageKeyCandidatesForPid(proc);
-        CloseHandle(proc);
-        for (const QString& c : cs) {
-            if (!structCandidates.contains(c)) structCandidates.append(c);
+    {
+        std::vector<std::pair<HANDLE, std::unique_ptr<ProcSuspendGuard>>> opened;
+        for (quint32 pid : pids) {
+            HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | PROCESS_SUSPEND_RESUME,
+                                      FALSE, pid);
+            if (!proc) {  // 无挂起权限时回落（保持扫描能力）
+                proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
+            }
+            if (!proc) continue;
+            opened.emplace_back(proc, std::make_unique<ProcSuspendGuard>(proc));
         }
+        int suspendedCount = 0;
+        for (const auto& o : opened) if (o.second->suspended()) ++suspendedCount;
+        Logger::instance().info(
+            QString("extractImageKeyMulti: frozen %1/%2 processes for struct scan")
+                .arg(suspendedCount).arg(opened.size()),
+            "wechat.key");
+        for (const auto& o : opened) {
+            const QStringList cs = collectImageKeyCandidatesForPid(o.first);
+            for (const QString& c : cs) {
+                if (!structCandidates.contains(c)) structCandidates.append(c);
+            }
+        }
+        for (auto& o : opened) { o.second.reset(); CloseHandle(o.first); }
     }
     Logger::instance().info(
         QString("extractImageKeyMulti: struct candidates=%1 (via 0x10 pattern)").arg(structCandidates.size()),
@@ -1058,11 +1137,23 @@ QString extractImageKeyMulti(const QList<quint32>& pids,
                 "wechat.key");
             return c;
         }
+        Logger::instance().info(
+            QString("extractImageKeyMulti: struct-candidate MISS key=%1 err=%2")
+                .arg(c).arg(err),
+            "wechat.key");
     }
-    // XOR 还原候选（4.1.10.31+ 混淆形态）
-    for (const QString& xk : allXorKeys) {
+    // XOR 还原候选（4.1.10.31+ 混淆形态）。图片 key 是 16B，
+    // 32B 的 v5 xorKey 展开为前/后两个 16B mask 逐段尝试。
+    const QStringList masks16 = expandXorMasks16(allXorKeys);
+    if (!masks16.isEmpty()) {
+        Logger::instance().info(
+            QString("extractImageKeyMulti: xor masks16=%1 (from %2 dll xorKeys)")
+                .arg(masks16.size()).arg(allXorKeys.size()),
+            "wechat.key");
+    }
+    for (const QString& mk : masks16) {
         for (const QString& c : structCandidates) {
-            const QString xored = xorHexKeys(c, xk);
+            const QString xored = xorHexKeys(c, mk);
             if (xored.isEmpty() || xored == c) continue;
             QString err;
             if (!verifyImageKeyMulti(allOracles, xored, &err).isEmpty()) {
@@ -1072,6 +1163,10 @@ QString extractImageKeyMulti(const QList<quint32>& pids,
                     "wechat.key");
                 return xored;
             }
+            Logger::instance().info(
+                QString("extractImageKeyMulti: struct-candidate XOR-MISS key=%1 (mask %2) err=%3")
+                    .arg(xored).arg(mk).arg(err),
+                "wechat.key");
         }
     }
     Logger::instance().info(
@@ -1081,7 +1176,11 @@ QString extractImageKeyMulti(const QList<quint32>& pids,
     // ── 阶段 B：盲扫内存（原逻辑） ────────────────────────────────────────────
     QString lastErr;
     for (quint32 pid : pids) {
-        HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
+        HANDLE proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | PROCESS_SUSPEND_RESUME,
+                                  FALSE, pid);
+        if (!proc) {  // 无挂起权限时回落（保持扫描能力）
+            proc = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
+        }
         if (!proc) {
             lastErr = QStringLiteral("无法打开进程 PID %1（err=%2）")
                 .arg(pid).arg(GetLastError());
@@ -1095,7 +1194,17 @@ QString extractImageKeyMulti(const QList<quint32>& pids,
                 QString("extractImageKeyMulti: pid=%1 xorKeys=%2").arg(pid).arg(xorKeys.size()),
                 "wechat.key");
         }
-        const QString k = scanPidForImageKey(proc, pid, ct1, ct2, knownDatPath, extraOracles, xorKeys);
+        QString k;
+        {
+            const ProcSuspendGuard guard(proc);  // 冻结内存，防盲扫期间 key 被清
+            if (guard.suspended()) {
+                Logger::instance().info(
+                    QString("extractImageKeyMulti: pid=%1 suspended during scan (WeChat may stall briefly)")
+                        .arg(pid),
+                    "wechat.key");
+            }
+            k = scanPidForImageKey(proc, pid, ct1, ct2, knownDatPath, extraOracles, xorKeys);
+        }
         CloseHandle(proc);
         if (!k.isEmpty()) {
             Logger::instance().info(
@@ -1109,12 +1218,13 @@ QString extractImageKeyMulti(const QList<quint32>& pids,
         *errOut = QStringLiteral(
             "已扫描 %1 个微信进程仍未找到图片 AES key。\n"
             "最后错误：%2\n"
-            "可能原因：\n"
+            "重要：提取前必须先在微信里双击打开一张目标图片（让它完整显示原图），"
+            "保持聊天窗口不动，然后立即点提取——图片 key 只在微信解密图片时短暂驻留内存。\n"
+            "其他可能原因：\n"
             "  1) .dat 不是 V2 格式（magic 应为 07 08 V 2 08 07）\n"
             "  2) 微信版本 ≥ 4.1.10.31，XOR 还原失败（特征可能已变化）\n"
             "  3) 微信进程权限不足（请以管理员权限运行 bambooRat）\n"
-            "  4) oracle .dat 与进程不匹配（用另一张大图重试）\n"
-            "  5) key 仅在特定会话窗口打开时驻留内存（请重试）")
+            "  4) oracle .dat 与刚打开的图片不属同一账号")
             .arg(pids.size()).arg(lastErr);
     }
     return {};

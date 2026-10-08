@@ -34,6 +34,30 @@ constexpr char kZstdMagic[] = "\x28\xb5\x2f\xfd";
 // runQuery 对 zstd 内容返回的标记（避免二进制经 UTF-8 转换损坏）
 const QString kZstdMark = QStringLiteral("\x01__ZSTD__");
 
+// XML 子节点 / 属性解析（与 CacheDb.cpp 内部相同，独立 copy 一份避免跨编译单元暴露）
+static QString xmlTag(const QString& xml, const QString& tag) {
+    if (xml.isEmpty() || tag.isEmpty()) return {};
+    const QString pat = "<" + tag + "[^>]*>";
+    const QRegularExpression open(pat, QRegularExpression::CaseInsensitiveOption);
+    const auto m1 = open.match(xml);
+    if (!m1.hasMatch()) return {};
+    const int start = m1.capturedEnd();
+    const QRegularExpression close("</" + tag + ">", QRegularExpression::CaseInsensitiveOption);
+    const auto m2 = close.match(xml, start);
+    if (!m2.hasMatch()) return {};
+    return xml.mid(start, m2.capturedStart() - start).simplified();
+}
+static QString xmlAttr(const QString& xml, const QString& attr) {
+    if (xml.isEmpty() || attr.isEmpty()) return {};
+    const QString needle = attr + "=\"";
+    const int p1 = xml.indexOf(needle, 0, Qt::CaseInsensitive);
+    if (p1 < 0) return {};
+    const int start = p1 + needle.size();
+    const int end = xml.indexOf('"', start);
+    if (end < 0) return {};
+    return xml.mid(start, end - start);
+}
+
 // ── 版本参数（3.x: SQLCipher 旧版；4.x: SQLCipher 4 默认）──────────────────
 struct DbParams {
     int kdfIter;         // PBKDF2 迭代次数
@@ -591,8 +615,8 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
         if (limit > 0) sql += QString(" LIMIT %1").arg(limit);
         for (const QString& db : dbs) {
             auto rows = runOn(db, sql, {});
-            // 4.x 的 type=47 (动画表情) message_content 是 zstd 压缩 XML；runQuery 因为
-            // 列声明是 TEXT 但内容是二进制，已经把原始字节替换成 kZstdMark 标记，md5 解析不到。
+            // 4.x 的 type=47/43/49 message_content 是 zstd 压缩 XML；runQuery 因为
+            // 列声明是 TEXT 但内容是二进制，已经把原始字节替换成 kZstdMark 标记，md5/文件名/AES key 都解析不到。
             // 这里对当前 session 批量再查一次原始字节（按 server_id 映射），下面循环里按需解压。
             // ⚠ 必须直接 sqlite3_column_blob 拿 BLOB 字节，绕开 runOn 的 zstd→mark 替换。
             QHash<qint64, QByteArray> zstdRawBySid;
@@ -601,7 +625,7 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
                 if (sqlite3_open(db.toUtf8().constData(), &rawDb) == SQLITE_OK) {
                     const QString rawSql = QString(
                         "SELECT server_id, message_content FROM %1 "
-                        "WHERE local_type = 47 AND length(message_content) >= 4").arg(tableName);
+                        "WHERE local_type IN (43,47,49) AND length(message_content) >= 4").arg(tableName);
                     sqlite3_stmt* rst = nullptr;
                     if (sqlite3_prepare_v2(rawDb, rawSql.toUtf8().constData(),
                                             -1, &rst, nullptr) == SQLITE_OK) {
@@ -640,21 +664,48 @@ QList<WeChatDb::ChatMessage> WeChatDb::loadMessages(const QString& talker, int l
                 m.senderName = displayName(m.senderId);
                 m.content = content;
                 m.display = previewOf(m.type, 0, content, QString());
-                // 提取图片附件 md5
-                //   - type 3 从 packed_info_data（hex @ byte[8..40]）直接读
+                // 提取图片/视频附件 md5
+                //   - type 3 / 43 从 packed_info_data（hex @ byte[8..40]）直接读
                 //   - type 47 emoji 4.x 的 packed 只有 4~6 字节、不含 md5；要解压 zstd XML 取 <emoji md5>
-                if (m.type == 3 || m.type == 47) {
+                if (m.type == 3 || m.type == 43 || m.type == 47) {
                     m.attachMd5 = extractImageMd5FromPacked(packed);
                 }
-                // 诊断：type=47 emoji 处理路径
-                if (m.type == 47 && m.attachMd5.isEmpty()
-                    && zstdRawBySid.contains(m.msgId)) {
-                    // 4.x emoji md5 在 zstd(message_content) 解压后的 XML 里
-                    // runQuery 把 zstd 字节当 UTF-8 QString 解读，content 实际是乱码，
-                    // 所以不再依赖 content == kZstdMark 的标志，直接拿 zstdRawBySid 原始字节解压
+                // zstd 解压后能拿到更多元信息（emoji 缩略图 md5、文件/视频 aeskey / 长度等）
+                if (zstdRawBySid.contains(m.msgId)) {
                     const QByteArray plain = decompressZstdText(zstdRawBySid.value(m.msgId));
                     if (!plain.isEmpty()) {
-                        m.attachMd5 = extractImageMd5FromXml(QString::fromUtf8(plain));
+                        const QString plainXml = QString::fromUtf8(plain);
+                        // emoji: fallback md5
+                        if (m.type == 47 && m.attachMd5.isEmpty()) {
+                            m.attachMd5 = extractImageMd5FromXml(plainXml);
+                        }
+                        // 视频: <videomsg aeskey playlength cdnvideourl>
+                        if (m.type == 43) {
+                            const QString videomsg = xmlTag(plainXml, QStringLiteral("videomsg"));
+                            const QString aesKey   = xmlAttr(videomsg, QStringLiteral("aeskey"));
+                            const QString playLen  = xmlAttr(videomsg, QStringLiteral("playlength"));
+                            if (!aesKey.isEmpty()) m.attachAesKey = aesKey;
+                            bool ok = false;
+                            const qint64 play = playLen.toLongLong(&ok);
+                            if (ok) m.attachLength = play;
+                        }
+                        // 文件 (type=49 sub=4): <appmsg><appattach aeskey md5>
+                        if (m.type == 49) {
+                            const QString appmsg    = xmlTag(plainXml, QStringLiteral("appmsg"));
+                            const QString appattach = xmlTag(appmsg,    QStringLiteral("appattach"));
+                            const QString aesKey    = xmlAttr(appattach, QStringLiteral("aeskey"));
+                            const QString fileMd5   = xmlAttr(appattach, QStringLiteral("md5"));
+                            if (!aesKey.isEmpty()) m.attachAesKey = aesKey;
+                            if (m.attachMd5.isEmpty() && fileMd5.size() == 32 &&
+                                fileMd5.contains(QRegularExpression(QStringLiteral("^[0-9a-fA-F]{32}$")))) {
+                                m.attachMd5 = fileMd5.toLower();
+                            }
+                        }
+                        // 替换 m.content 为明文 XML：sync worker 调 parseAttachMeta 时能解析
+                        // <videomsg>/<appmsg> 里的子字段（playlength/aeskey/totallen 等）
+                        if (m.type == 43 || m.type == 49) {
+                            m.content = plainXml;
+                        }
                     }
                 }
                 out.append(m);

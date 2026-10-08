@@ -136,9 +136,17 @@ void CacheDb::parseAttachMeta(int type, int subType,
 
         switch (subType) {
         case 4: {  // 文件
-            const QString fileInfoTag = xmlTag(appmsg, "appattach");
-            ext     = xmlTag(fileInfoTag, "fileext").toLower();
-            sizeStr = xmlTag(fileInfoTag, "totallen");
+            const QString appattach = xmlTag(appmsg, "appattach");
+            ext     = xmlTag(appattach, "fileext").toLower();
+            sizeStr = xmlTag(appattach, "totallen");
+            // 文件附件也有自己的 md5 + aeskey（4.x: <appattach> 内 hex 32 字符 md5 + aeskey）
+            const QString fileMd5 = xmlAttr(appattach, QStringLiteral("md5"));
+            if (fileMd5.size() == 32 &&
+                fileMd5.contains(QRegularExpression(QStringLiteral("^[0-9a-fA-F]{32}$")))) {
+                m["attachMd5"] = fileMd5.toLower();
+            }
+            const QString aesKey = xmlAttr(appattach, QStringLiteral("aeskey"));
+            if (!aesKey.isEmpty()) m["attachAesKey"] = aesKey;
             break;
         }
         case 5:   // 链接
@@ -199,11 +207,24 @@ void CacheDb::parseAttachMeta(int type, int subType,
         m["attachMime"] = "voice";
         setIfEmpty("attachMd5", extractFileMd5FromXml(content));
         break;
-    case 43:
+    case 43: {
+        // 4.x 视频: <videomsg> 内含 aeskey / playlength / cdnvideourl / cdnthumbaeskey / cdnthumburl
+        //  - parseAttachMeta 期望 content 已是明文 XML（WeChatDb::loadMessages 4.x 分支会先把 zstd
+        //    解压后的字节覆写到 m.content）；
+        //  - 3.x 视频：直接从 StrContent XML 解析即可。
+        const QString videomsg = xmlTag(content, "videomsg");
+        const QString aesKey   = xmlAttr(videomsg, QStringLiteral("aeskey"));
+        const QString playLen  = xmlAttr(videomsg, QStringLiteral("playlength"));
+        const QString videoUrl = xmlAttr(videomsg, QStringLiteral("cdnvideourl"));
+        if (!aesKey.isEmpty()) m["attachAesKey"] = aesKey;
+        m["attachLength"] = pickNum(playLen);
+        if (!videoUrl.isEmpty() && m.value(QString::fromLatin1("attachUrl")).toString().isEmpty())
+            m["attachUrl"] = videoUrl;
         m["attachExt"]  = "video";
         m["attachMime"] = "video";
         setIfEmpty("attachMd5", extractFileMd5FromXml(content));
         break;
+    }
     case 47:
         m["attachExt"]  = "gif";
         m["attachMime"] = "gif";
@@ -288,6 +309,8 @@ bool CacheDb::initialize(QString* errOut) {
             attach_url   TEXT,
             attach_mime  TEXT,
             attach_md5   TEXT,
+            attach_aeskey TEXT,
+            attach_length INTEGER,
             PRIMARY KEY (acc_id, msg_id)
         );
         CREATE INDEX IF NOT EXISTS idx_messages_acc_talker_time
@@ -343,6 +366,8 @@ bool CacheDb::initialize(QString* errOut) {
             if (!hasCol("attach_url"))   execSql(db2, "ALTER TABLE messages ADD COLUMN attach_url   TEXT", nullptr);
             if (!hasCol("attach_mime"))  execSql(db2, "ALTER TABLE messages ADD COLUMN attach_mime  TEXT", nullptr);
             if (!hasCol("attach_md5"))   execSql(db2, "ALTER TABLE messages ADD COLUMN attach_md5   TEXT", nullptr);
+            if (!hasCol("attach_aeskey")) execSql(db2, "ALTER TABLE messages ADD COLUMN attach_aeskey TEXT", nullptr);
+            if (!hasCol("attach_length")) execSql(db2, "ALTER TABLE messages ADD COLUMN attach_length INTEGER", nullptr);
             closeDb(db2);
         }
     }
@@ -671,8 +696,8 @@ bool replaceMessagesInternal(sqlite3* db, const QString& accId, const QString& t
         INSERT INTO messages (acc_id, talker, msg_id, sender_id, sender_name, is_sender,
                               type, sub_type, content, display, time,
                               attach_title, attach_size, attach_ext, attach_url, attach_mime,
-                              attach_md5)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                              attach_md5, attach_aeskey, attach_length)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
     )SQL";
     sqlite3_stmt* ins = nullptr;
     sqlite3_prepare_v2(db, sql.toUtf8().constData(), -1, &ins, nullptr);
@@ -695,6 +720,8 @@ bool replaceMessagesInternal(sqlite3* db, const QString& accId, const QString& t
         sqlite3_bind_text  (ins,15, m["attachUrl"].toString().toUtf8().constData(),  -1, SQLITE_TRANSIENT);
         sqlite3_bind_text  (ins,16, m["attachMime"].toString().toUtf8().constData(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text  (ins,17, m["attachMd5"].toString().toUtf8().constData(),  -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text  (ins,18, m["attachAesKey"].toString().toUtf8().constData(),-1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64 (ins,19, m["attachLength"].toLongLong());
         sqlite3_step(ins);
     }
     sqlite3_finalize(ins);
@@ -717,8 +744,8 @@ bool upsertMessagesInternal(sqlite3* db, const QString& accId, const QString& ta
         INSERT INTO messages (acc_id, talker, msg_id, sender_id, sender_name, is_sender,
                               type, sub_type, content, display, time,
                               attach_title, attach_size, attach_ext, attach_url, attach_mime,
-                              attach_md5)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                              attach_md5, attach_aeskey, attach_length)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
         ON CONFLICT(acc_id, msg_id) DO UPDATE SET
             sender_id=excluded.sender_id, sender_name=excluded.sender_name,
             content=excluded.content, display=excluded.display,
@@ -726,7 +753,9 @@ bool upsertMessagesInternal(sqlite3* db, const QString& accId, const QString& ta
             attach_title=excluded.attach_title, attach_size=excluded.attach_size,
             attach_ext=excluded.attach_ext, attach_url=excluded.attach_url,
             attach_mime=excluded.attach_mime,
-            attach_md5=excluded.attach_md5
+            attach_md5=excluded.attach_md5,
+            attach_aeskey=excluded.attach_aeskey,
+            attach_length=excluded.attach_length
     )SQL";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql.toUtf8().constData(), -1, &stmt, nullptr) != SQLITE_OK)
@@ -750,6 +779,8 @@ bool upsertMessagesInternal(sqlite3* db, const QString& accId, const QString& ta
         sqlite3_bind_text  (stmt,15, m["attachUrl"].toString().toUtf8().constData(),  -1, SQLITE_TRANSIENT);
         sqlite3_bind_text  (stmt,16, m["attachMime"].toString().toUtf8().constData(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text  (stmt,17, m["attachMd5"].toString().toUtf8().constData(),  -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text  (stmt,18, m["attachAesKey"].toString().toUtf8().constData(),-1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64 (stmt,19, m["attachLength"].toLongLong());
         sqlite3_step(stmt);
     }
     sqlite3_finalize(stmt);
@@ -774,7 +805,8 @@ QList<QVariantMap> CacheDb::loadMessages(const QString& accId, const QString& ta
     QString sql =
         "SELECT msg_id, sender_id, sender_name, is_sender, type, sub_type, "
         "content, display, time, "
-        "attach_title, attach_size, attach_ext, attach_url, attach_mime, attach_md5 "
+        "attach_title, attach_size, attach_ext, attach_url, attach_mime, attach_md5, "
+        "attach_aeskey, attach_length "
         "FROM messages WHERE acc_id=?1 AND talker=?2 ORDER BY time ASC";
     if (limit > 0) sql += QString(" LIMIT %1").arg(limit);
     sqlite3_stmt* stmt = nullptr;
@@ -798,6 +830,8 @@ QList<QVariantMap> CacheDb::loadMessages(const QString& accId, const QString& ta
             m["attachUrl"]   = QString::fromUtf8((const char*)sqlite3_column_text(stmt, 12));
             m["attachMime"]  = QString::fromUtf8((const char*)sqlite3_column_text(stmt, 13));
             m["attachMd5"]   = QString::fromUtf8((const char*)sqlite3_column_text(stmt, 14));
+            m["attachAesKey"] = QString::fromUtf8((const char*)sqlite3_column_text(stmt, 15));
+            m["attachLength"] = qint64(sqlite3_column_int64(stmt, 16));
             out.append(m);
         }
     }

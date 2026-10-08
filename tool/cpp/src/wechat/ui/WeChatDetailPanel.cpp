@@ -1,4 +1,5 @@
 #include "wechat/ui/WeChatDetailPanel.h"
+#include "wechat/ui/AttachDetailDialog.h"
 #include "app/Theme.h"
 #include "core/Logger.h"
 #include "wechat/WeChatImageDecoder.h"
@@ -594,6 +595,20 @@ QWidget* WeChatDetailPanel::makeBubble(const QVariantMap& m) {
                             .arg(self ? "#2A6B1F" : Theme::kMuted));
         topRow->addWidget(kind);
 
+        // 视频 type=43：附播放时长
+        const qint64 attachLength = m["attachLength"].toLongLong();
+        if (type == 43 && attachLength > 0) {
+            QString dur;
+            const qint64 mm = attachLength / 60, ss = attachLength % 60;
+            if (mm > 0) dur = QStringLiteral("%1:%2").arg(mm).arg(ss, 2, 10, QChar('0'));
+            else        dur = QStringLiteral("%1秒").arg(ss);
+            auto* durLbl = new QLabel(dur);
+            durLbl->setStyleSheet(QString("color:%1;font-size:11px;"
+                                          "background:transparent;")
+                                   .arg(self ? "#2A6B1F" : Theme::kFaint));
+            topRow->addWidget(durLbl);
+        }
+
         topRow->addStretch(1);
 
         if (attachSize > 0) {
@@ -618,6 +633,28 @@ QWidget* WeChatDetailPanel::makeBubble(const QVariantMap& m) {
         titleLbl->setMaximumWidth(360);
         cl->addWidget(titleLbl);
 
+        // 视频 / 文件：无本地 .dat 时给出"未缓存"提示
+        const QString attachMd5Local = m["attachMd5"].toString();
+        const bool isVideoOrFile = (type == 43 || (type == 49 && subType == 4));
+        bool locallyCached = false;
+        if (isVideoOrFile && !attachMd5Local.isEmpty() && msgDt.isValid() && !m_dataDir.isEmpty()) {
+            const QString sub = (type == 43) ? QStringLiteral("Video") : QStringLiteral("File");
+            const QString datPath = m_dataDir + "/msg/attach/"
+                + QString::fromLatin1(QCryptographicHash::hash(
+                    m_currentTalker.toUtf8(), QCryptographicHash::Md5).toHex())
+                + "/" + msgDt.toString(QStringLiteral("yyyy-MM")) + "/" + sub
+                + "/" + attachMd5Local + ".dat";
+            locallyCached = QFileInfo::exists(datPath);
+        }
+        if (isVideoOrFile && !locallyCached) {
+            auto* noteLbl = new QLabel(QStringLiteral("⚠ 本机无缓存（需到微信客户端下载）"));
+            noteLbl->setStyleSheet(QString("color:%1;font-size:10px;"
+                                           "background:transparent;margin-top:2px;")
+                                    .arg(Theme::kFaint));
+            noteLbl->setMaximumWidth(360);
+            cl->addWidget(noteLbl);
+        }
+
         // 链接：附 URL
         if (isLink && !attachUrl.isEmpty()) {
             auto* urlLbl = new QLabel(attachUrl);
@@ -638,6 +675,13 @@ QWidget* WeChatDetailPanel::makeBubble(const QVariantMap& m) {
                                         "background:transparent;margin-top:2px;")
                                   .arg(Theme::kFaint));
             cl->addWidget(appid);
+        }
+
+        // 视频/文件卡片：双击打开详情对话框（CDN URL / AES key / md5）
+        if (isVideoOrFile) {
+            card->setProperty("attachMsg", m);
+            card->setCursor(Qt::PointingHandCursor);
+            card->installEventFilter(this);
         }
 
         colWrap->addWidget(card, 0, self ? Qt::AlignRight : Qt::AlignLeft);
@@ -847,6 +891,23 @@ private:
 };
 
 bool WeChatDetailPanel::eventFilter(QObject* obj, QEvent* ev) {
+    if (ev->type() == QEvent::MouseButtonDblClick) {
+        // 视频 / 文件卡片：双击打开详情对话框
+        auto* w = qobject_cast<QWidget*>(obj);
+        QWidget* card = w;
+        while (card && !card->property("attachMsg").isValid()) card = card->parentWidget();
+        if (card && card->property("attachMsg").isValid()) {
+            const QVariantMap mm = card->property("attachMsg").toMap();
+            if (!mm.isEmpty()) {
+                auto* dlg = new AttachDetailDialog(mm, this);
+                dlg->setAttribute(Qt::WA_DeleteOnClose);
+                dlg->show();
+                dlg->raise();
+                dlg->activateWindow();
+                return true;
+            }
+        }
+    }
     if (ev->type() == QEvent::MouseButtonRelease) {
         auto* w = qobject_cast<QWidget*>(obj);
         if (w) {
